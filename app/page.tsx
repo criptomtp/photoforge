@@ -11,7 +11,7 @@ export default function LandingPage() {
             Тарифи
           </Link>
           <Link
-            href="/dashboard"
+            href="/login"
             className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg transition-colors"
           >
             Увійти
@@ -35,7 +35,7 @@ export default function LandingPage() {
         </p>
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
           <Link
-            href="/dashboard"
+            href="/register"
             className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] font-semibold px-8 py-4 rounded-xl transition-colors text-lg"
           >
             Почати безкоштовно

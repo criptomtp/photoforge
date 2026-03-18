@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 
 const navLinks = [
   { href: "/dashboard/generate", label: "Генерація" },
@@ -12,11 +13,19 @@ const navLinks = [
 
 export function Navbar() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function handleLogout() {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
 
   return (
     <nav className="border-b border-[#2A2723] bg-[#0C0B0A]/95 backdrop-blur-sm sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2">
+        <Link href="/dashboard" className="flex items-center gap-2">
           <span className="font-heading text-xl font-bold text-[#E8943A]">
             PhotoForge
           </span>
@@ -41,11 +50,18 @@ export function Navbar() {
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard/settings"
-            className="text-sm text-[#6B6560] hover:text-[#F5F0EB] transition-colors"
+            className={`text-sm transition-colors ${
+              pathname === "/dashboard/settings"
+                ? "text-[#F5F0EB]"
+                : "text-[#6B6560] hover:text-[#F5F0EB]"
+            }`}
           >
             Налаштування
           </Link>
-          <button className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+          <button
+            onClick={handleLogout}
+            className="bg-[#1E1C19] hover:bg-[#2A2723] border border-[#2A2723] text-[#F5F0EB] text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          >
             Вийти
           </button>
         </div>
