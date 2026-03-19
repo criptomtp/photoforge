@@ -43,8 +43,8 @@ export async function POST(request: Request) {
         const gender      = formData.get("gender") as string;
         const imageFiles  = formData.getAll("images") as File[];
 
-        if (!brand || !productType || !season || !gender || imageFiles.length === 0) {
-          send({ type: "error", message: "Заповніть всі поля та завантажте хоча б одне фото" });
+        if (imageFiles.length === 0) {
+          send({ type: "error", message: "Завантажте хоча б одне референс-фото" });
           controller.close();
           return;
         }

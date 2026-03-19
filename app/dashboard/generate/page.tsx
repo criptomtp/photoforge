@@ -181,7 +181,6 @@ export default function GeneratePage() {
                 onChange={(e) => setBrand(e.target.value)}
                 placeholder="Nike, Zara, H&M..."
                 className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors"
-                required
                 disabled={isRunning}
               />
             </div>
@@ -193,7 +192,6 @@ export default function GeneratePage() {
                 onChange={(e) => setProductType(e.target.value)}
                 placeholder="Пуховик, кросівки..."
                 className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors"
-                required
                 disabled={isRunning}
               />
             </div>
@@ -206,7 +204,6 @@ export default function GeneratePage() {
                 value={season}
                 onChange={(e) => setSeason(e.target.value)}
                 className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] focus:outline-none focus:border-[#E8943A] transition-colors"
-                required
                 disabled={isRunning}
               >
                 <option value="">Оберіть сезон</option>
@@ -214,15 +211,14 @@ export default function GeneratePage() {
               </select>
             </div>
             <div>
-              <label className="block text-sm text-[#6B6560] mb-2">Цільова аудиторія</label>
+              <label className="block text-sm text-[#6B6560] mb-2">Стать</label>
               <select
                 value={gender}
                 onChange={(e) => setGender(e.target.value)}
                 className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] focus:outline-none focus:border-[#E8943A] transition-colors"
-                required
                 disabled={isRunning}
               >
-                <option value="">Оберіть аудиторію</option>
+                <option value="">Оберіть стать</option>
                 {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
               </select>
             </div>
@@ -282,7 +278,7 @@ export default function GeneratePage() {
           <div className="flex gap-3">
             <button
               type="submit"
-              disabled={isRunning || !brand || !productType || !season || !gender || images.length === 0}
+              disabled={isRunning}
               className="flex-1 bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-4 rounded-xl transition-colors"
             >
               {isRunning ? "Генерація..." : "Згенерувати 8 фото"}
