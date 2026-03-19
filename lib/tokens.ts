@@ -14,47 +14,69 @@ export const TOKEN_COSTS = {
 
 /**
  * Resolves which Gemini API key to use and validates token balance.
- * Returns { apiKey, byok } or throws with a user-facing message.
+ * Returns { apiKey, byok, freeQuota } or throws with a user-facing message.
+ * freeQuota=true means the generation is covered by the free monthly quota (no token deduction).
  */
 export async function resolveApiKey(userId: string): Promise<{
   apiKey: string;
   byok: boolean;
+  freeQuota: boolean;
 }> {
   // 1. Check user's own BYOK key
   const { data: profile } = await supabaseAdmin
     .from("profiles")
-    .select("gemini_api_key, token_balance")
+    .select("gemini_api_key, token_balance, plan, generations_used, generations_limit")
     .eq("id", userId)
     .single();
 
   if (profile?.gemini_api_key) {
     const { decrypt } = await import("./crypto");
-    return { apiKey: decrypt(profile.gemini_api_key), byok: true };
+    return { apiKey: decrypt(profile.gemini_api_key), byok: true, freeQuota: false };
   }
 
-  // 2. Check platform key + token balance
+  async function getPlatformKey(): Promise<string> {
+    const { data: settings } = await supabaseAdmin
+      .from("platform_settings")
+      .select("gemini_api_key")
+      .eq("id", 1)
+      .single();
+
+    if (!settings?.gemini_api_key) {
+      throw new Error("Platform Gemini API key not configured. Contact admin.");
+    }
+    const { decrypt } = await import("./crypto");
+    return decrypt(settings.gemini_api_key);
+  }
+
+  // 2. Free plan monthly quota — no tokens needed
+  const plan: string = profile?.plan ?? "free";
+  const generationsUsed: number = Number(profile?.generations_used ?? 0);
+  const generationsLimit: number = Number(profile?.generations_limit ?? 0);
+
+  if (plan === "free" && generationsUsed < generationsLimit) {
+    const apiKey = await getPlatformKey();
+    return { apiKey, byok: false, freeQuota: true };
+  }
+
+  // 3. Paid plans / extra generations — check token balance
   const balance: number = Number(profile?.token_balance ?? 0);
   const required = TOKEN_COSTS.total_per_run;
 
   if (balance < required) {
+    if (plan === "free") {
+      throw new Error(
+        `Вичерпано безкоштовний ліміт (${generationsLimit} генерацій/міс). ` +
+        `Поповніть баланс токенів або додайте власний Gemini API ключ у Налаштуваннях.`
+      );
+    }
     throw new Error(
       `Недостатньо токенів (є ${balance.toFixed(2)}, потрібно ${required.toFixed(2)}). ` +
       `Поповніть баланс або додайте власний Gemini API ключ у Налаштуваннях.`
     );
   }
 
-  const { data: settings } = await supabaseAdmin
-    .from("platform_settings")
-    .select("gemini_api_key")
-    .eq("id", 1)
-    .single();
-
-  if (!settings?.gemini_api_key) {
-    throw new Error("Platform Gemini API key not configured. Contact admin.");
-  }
-
-  const { decrypt } = await import("./crypto");
-  return { apiKey: decrypt(settings.gemini_api_key), byok: false };
+  const apiKey = await getPlatformKey();
+  return { apiKey, byok: false, freeQuota: false };
 }
 
 /**

@@ -64,9 +64,10 @@ export async function POST(request: Request) {
 
         let apiKey: string;
         let byok: boolean;
+        let freeQuota: boolean;
 
         try {
-          ({ apiKey, byok } = await resolveApiKey(user.id));
+          ({ apiKey, byok, freeQuota } = await resolveApiKey(user.id));
         } catch (err) {
           send({ type: "error", message: (err as Error).message });
           controller.close();
@@ -176,8 +177,8 @@ export async function POST(request: Request) {
           }
         }
 
-        // ── 9. Deduct tokens if using platform key ─────────────────────────
-        if (!byok && imagesGenerated > 0) {
+        // ── 9. Deduct tokens if using platform key (not free quota) ───────
+        if (!byok && !freeQuota && imagesGenerated > 0) {
           try {
             await deductTokens(user.id, generationId, imagesGenerated);
           } catch (err) {
