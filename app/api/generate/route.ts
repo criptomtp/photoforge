@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { generatePrompts, generateImage, type GeminiImagePart } from "@/lib/gemini";
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveApiKey, deductTokens } from "@/lib/tokens";
+import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
 
 export const maxDuration = 300;
 
@@ -10,7 +11,7 @@ type SSEEvent =
   | { type: "prompts_ready"; count: number }
   | { type: "image_start"; index: number; total: number; angle: string }
   | { type: "image_done"; index: number; url: string }
-  | { type: "done"; generationId: string; urls: string[]; byok: boolean }
+  | { type: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string }
   | { type: "error"; message: string };
 
 const ANGLE_NAMES = [
@@ -137,20 +138,63 @@ export async function POST(request: Request) {
           }
         }
 
-        // ── 8. Deduct tokens if using platform key ─────────────────────────
+        // ── 8. Upload to Google Drive if connected ─────────────────────────
+        let driveFolderUrl: string | undefined;
+        let driveFolderId: string | undefined;
+
+        const driveToken = await getAccessToken(user.id).catch(() => null);
+        if (driveToken && imagesGenerated > 0) {
+          try {
+            send({ type: "status", message: "Завантажую на Google Drive..." });
+            const folderName = `${brand} — ${productType}`;
+            const { id: folderId, webViewLink } = await createDriveFolder(driveToken, folderName);
+            driveFolderId = folderId;
+            driveFolderUrl = webViewLink;
+
+            // Raw base64 images aren't stored — re-fetch from Supabase Storage
+            // and upload only successful ones
+            const driveUploads = imageUrls.map(async (url, i) => {
+              if (!url) return;
+              try {
+                const res = await fetch(url);
+                const buf = await res.arrayBuffer();
+                const b64 = Buffer.from(buf).toString("base64");
+                await uploadFileToDrive(
+                  driveToken,
+                  folderId,
+                  `${ANGLE_NAMES[i]?.replace(/ /g, "_")}.jpg`,
+                  b64
+                );
+              } catch (e) {
+                console.error(`Drive upload ${i + 1} failed:`, e);
+              }
+            });
+            await Promise.all(driveUploads);
+          } catch (err) {
+            console.error("Drive folder/upload failed:", err);
+            // Non-fatal
+          }
+        }
+
+        // ── 9. Deduct tokens if using platform key ─────────────────────────
         if (!byok && imagesGenerated > 0) {
           try {
             await deductTokens(user.id, generationId, imagesGenerated);
           } catch (err) {
             console.error("Token deduction failed:", err);
-            // Non-fatal — generation already done
           }
         }
 
-        // ── 9. Finalise DB ─────────────────────────────────────────────────
+        // ── 10. Finalise DB ────────────────────────────────────────────────
         await supabase
           .from("generations")
-          .update({ status: "done", images_generated: imagesGenerated, image_urls: imageUrls })
+          .update({
+            status: "done",
+            images_generated: imagesGenerated,
+            image_urls: imageUrls,
+            ...(driveFolderId ? { google_drive_folder_id: driveFolderId } : {}),
+            ...(driveFolderUrl ? { google_drive_folder_url: driveFolderUrl } : {}),
+          })
           .eq("id", generationId);
 
         // Increment usage counter
@@ -166,7 +210,7 @@ export async function POST(request: Request) {
             .eq("id", user.id);
         }
 
-        send({ type: "done", generationId, urls: imageUrls, byok });
+        send({ type: "done", generationId, urls: imageUrls, byok, driveUrl: driveFolderUrl });
         controller.close();
       } catch (err) {
         send({ type: "error", message: err instanceof Error ? err.message : "Невідома помилка" });

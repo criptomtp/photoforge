@@ -20,7 +20,7 @@ const ANGLE_NAMES = [
 type GenerationState =
   | { phase: "idle" }
   | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[] }
-  | { phase: "done"; generationId: string; urls: string[] }
+  | { phase: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string }
   | { phase: "error"; message: string };
 
 export default function GeneratePage() {
@@ -119,7 +119,7 @@ export default function GeneratePage() {
               break;
 
             case "done":
-              setState({ phase: "done", generationId: event.generationId, urls: event.urls });
+              setState({ phase: "done", generationId: event.generationId, urls: event.urls, byok: event.byok, driveUrl: event.driveUrl });
               break;
 
             case "error":
@@ -344,10 +344,20 @@ export default function GeneratePage() {
 
           {isDone && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="text-[#F5F0EB] font-medium">
-                  ✓ Готово — {state.urls.filter(Boolean).length} фото згенеровано
-                </p>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <p className="text-[#F5F0EB] font-medium">
+                    ✓ {state.urls.filter(Boolean).length} фото згенеровано
+                  </p>
+                  <div className="flex gap-2 mt-1">
+                    {state.byok && (
+                      <span className="text-[10px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded">BYOK</span>
+                    )}
+                    {state.driveUrl && (
+                      <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded">Drive ✓</span>
+                    )}
+                  </div>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={handleDownloadZip}
@@ -355,6 +365,16 @@ export default function GeneratePage() {
                   >
                     ZIP
                   </button>
+                  {state.driveUrl && (
+                    <a
+                      href={state.driveUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="border border-blue-500/30 hover:border-blue-400 text-blue-400 text-sm px-4 py-2 rounded-lg transition-colors"
+                    >
+                      Drive →
+                    </a>
+                  )}
                   <Link
                     href="/dashboard/history"
                     className="border border-[#2A2723] hover:border-[#E8943A] text-[#F5F0EB] text-sm px-4 py-2 rounded-lg transition-colors"
