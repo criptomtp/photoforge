@@ -1,6 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const ADMIN_EMAIL = "criptomtp@gmail.com";
+
 export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
@@ -31,12 +33,23 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  // Redirect unauthenticated users away from /dashboard
+  // ── /admin/* — must be logged in as admin email ─────────────────────────
+  if (pathname.startsWith("/admin")) {
+    if (!user) {
+      return NextResponse.redirect(new URL("/login", request.url));
+    }
+    if (user.email !== ADMIN_EMAIL) {
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
+    return supabaseResponse;
+  }
+
+  // ── /dashboard/* — must be authenticated ────────────────────────────────
   if (!user && pathname.startsWith("/dashboard")) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  // Redirect authenticated users away from login/register
+  // ── /login | /register — redirect if already logged in ──────────────────
   if (user && (pathname === "/login" || pathname === "/register")) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
@@ -45,5 +58,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/login", "/register"],
+  matcher: ["/dashboard/:path*", "/admin/:path*", "/login", "/register"],
 };

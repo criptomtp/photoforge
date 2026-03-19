@@ -1,15 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
 import { generatePrompts, generateImage, type GeminiImagePart } from "@/lib/gemini";
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
+import { resolveApiKey, deductTokens } from "@/lib/tokens";
 
-export const maxDuration = 300; // 5 min timeout for Vercel
+export const maxDuration = 300;
 
 type SSEEvent =
   | { type: "status"; message: string }
   | { type: "prompts_ready"; count: number }
   | { type: "image_start"; index: number; total: number; angle: string }
   | { type: "image_done"; index: number; url: string }
-  | { type: "done"; generationId: string; urls: string[] }
+  | { type: "done"; generationId: string; urls: string[]; byok: boolean }
   | { type: "error"; message: string };
 
 const ANGLE_NAMES = [
@@ -29,19 +30,17 @@ export async function POST(request: Request) {
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: SSEEvent) => {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
-        );
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       };
 
       try {
-        // ── 1. Parse form data ──────────────────────────────────────────────
+        // ── 1. Parse FormData ───────────────────────────────────────────────
         const formData = await request.formData();
-        const brand = formData.get("brand") as string;
+        const brand       = formData.get("brand") as string;
         const productType = formData.get("productType") as string;
-        const season = formData.get("season") as string;
-        const gender = formData.get("gender") as string;
-        const imageFiles = formData.getAll("images") as File[];
+        const season      = formData.get("season") as string;
+        const gender      = formData.get("gender") as string;
+        const imageFiles  = formData.getAll("images") as File[];
 
         if (!brand || !productType || !season || !gender || imageFiles.length === 0) {
           send({ type: "error", message: "Заповніть всі поля та завантажте хоча б одне фото" });
@@ -49,7 +48,7 @@ export async function POST(request: Request) {
           return;
         }
 
-        // ── 2. Auth check ───────────────────────────────────────────────────
+        // ── 2. Auth ─────────────────────────────────────────────────────────
         const supabase = await createClient();
         const { data: { user } } = await supabase.auth.getUser();
 
@@ -59,18 +58,16 @@ export async function POST(request: Request) {
           return;
         }
 
-        // ── 3. Check generation limit ───────────────────────────────────────
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("generations_used, generations_limit, plan")
-          .eq("id", user.id)
-          .single();
+        // ── 3. Resolve API key (BYOK or platform + token check) ────────────
+        send({ type: "status", message: "Перевірка балансу..." });
 
-        if (profile && profile.generations_used >= profile.generations_limit) {
-          send({
-            type: "error",
-            message: `Ліміт генерацій вичерпано (${profile.generations_used}/${profile.generations_limit}). Оновіть план на /pricing`,
-          });
+        let apiKey: string;
+        let byok: boolean;
+
+        try {
+          ({ apiKey, byok } = await resolveApiKey(user.id));
+        } catch (err) {
+          send({ type: "error", message: (err as Error).message });
           controller.close();
           return;
         }
@@ -81,27 +78,19 @@ export async function POST(request: Request) {
         const referenceParts: GeminiImagePart[] = await Promise.all(
           imageFiles.slice(0, 9).map(async (file) => {
             const buffer = await file.arrayBuffer();
-            const base64 = Buffer.from(buffer).toString("base64");
             return {
               inline_data: {
                 mime_type: "image/jpeg",
-                data: base64,
+                data: Buffer.from(buffer).toString("base64"),
               },
             };
           })
         );
 
-        // ── 5. Create generation record in DB ──────────────────────────────
+        // ── 5. Create generation record ────────────────────────────────────
         const { data: generation, error: dbError } = await supabase
           .from("generations")
-          .insert({
-            user_id: user.id,
-            brand,
-            product_type: productType,
-            season,
-            gender,
-            status: "processing",
-          })
+          .insert({ user_id: user.id, brand, product_type: productType, season, gender, status: "processing" })
           .select()
           .single();
 
@@ -112,27 +101,17 @@ export async function POST(request: Request) {
         }
 
         const generationId: string = generation.id;
-        const apiKey = process.env.GEMINI_API_KEY!;
 
         // ── 6. Generate 8 prompts via Gemini 2.5 Pro ───────────────────────
-        send({ type: "status", message: "Генерую промпти з Gemini 2.5 Pro..." });
+        send({ type: "status", message: "Gemini 2.5 Pro: генерую промпти..." });
 
-        const prompts = await generatePrompts(
-          apiKey,
-          brand,
-          productType,
-          season,
-          gender,
-          referenceParts
-        );
-
+        const prompts = await generatePrompts(apiKey, brand, productType, season, gender, referenceParts);
         send({ type: "prompts_ready", count: prompts.length });
 
-        // ── 7. Ensure storage bucket exists ────────────────────────────────
+        // ── 7. Generate images via Gemini 2.5 Flash ────────────────────────
         await ensureBucket();
-
-        // ── 8. Generate each image sequentially ───────────────────────────
         const imageUrls: string[] = [];
+        let imagesGenerated = 0;
 
         for (let i = 0; i < prompts.length; i++) {
           const angleName = ANGLE_NAMES[i] ?? `Ракурс ${i + 1}`;
@@ -140,48 +119,57 @@ export async function POST(request: Request) {
 
           try {
             const base64Image = await generateImage(apiKey, prompts[i], referenceParts);
-
-            // Upload to Supabase Storage
             const path = `${user.id}/${generationId}/${i + 1}.jpg`;
-            const url = await uploadImage(base64Image, path);
+            const url  = await uploadImage(base64Image, path);
 
             imageUrls.push(url);
+            imagesGenerated++;
             send({ type: "image_done", index: i + 1, url });
 
-            // Update progress in DB
             await supabase
               .from("generations")
-              .update({ images_generated: i + 1 })
+              .update({ images_generated: imagesGenerated })
               .eq("id", generationId);
           } catch (imgErr) {
-            // Log but continue — one failed image shouldn't abort all
             console.error(`Image ${i + 1} failed:`, imgErr);
             imageUrls.push("");
             send({ type: "image_done", index: i + 1, url: "" });
           }
         }
 
-        // ── 9. Finalize DB record ──────────────────────────────────────────
+        // ── 8. Deduct tokens if using platform key ─────────────────────────
+        if (!byok && imagesGenerated > 0) {
+          try {
+            await deductTokens(user.id, generationId, imagesGenerated);
+          } catch (err) {
+            console.error("Token deduction failed:", err);
+            // Non-fatal — generation already done
+          }
+        }
+
+        // ── 9. Finalise DB ─────────────────────────────────────────────────
         await supabase
           .from("generations")
-          .update({
-            status: "done",
-            images_generated: imageUrls.filter(Boolean).length,
-            image_urls: imageUrls,
-          })
+          .update({ status: "done", images_generated: imagesGenerated, image_urls: imageUrls })
           .eq("id", generationId);
 
         // Increment usage counter
-        await supabase
+        const { data: pf } = await supabase
           .from("profiles")
-          .update({ generations_used: (profile?.generations_used ?? 0) + 1 })
-          .eq("id", user.id);
+          .select("generations_used")
+          .eq("id", user.id)
+          .single();
+        if (pf) {
+          await supabase
+            .from("profiles")
+            .update({ generations_used: pf.generations_used + 1 })
+            .eq("id", user.id);
+        }
 
-        send({ type: "done", generationId, urls: imageUrls });
+        send({ type: "done", generationId, urls: imageUrls, byok });
         controller.close();
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Невідома помилка";
-        send({ type: "error", message });
+        send({ type: "error", message: err instanceof Error ? err.message : "Невідома помилка" });
         controller.close();
       }
     },
