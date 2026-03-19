@@ -51,7 +51,7 @@ export const SUBSCRIPTION_PLANS = [
     priceId: process.env.STRIPE_PRICE_STARTER ?? "",
     tokensPerMonth: 100,
     generationsPerMonth: 24,
-    features: ["100 генерацій/міс", "Google Drive", "Google Sheets", "Без водяного знаку"],
+    features: ["24 генерації/міс (100 токенів)", "Google Drive", "Google Sheets", "Без водяного знаку"],
   },
   {
     id: "pro",
@@ -60,7 +60,7 @@ export const SUBSCRIPTION_PLANS = [
     priceId: process.env.STRIPE_PRICE_PRO ?? "",
     tokensPerMonth: 500,
     generationsPerMonth: 121,
-    features: ["500 генерацій/міс", "Excel + Sheets", "Google Drive + ZIP", "Пріоритетна черга", "API доступ"],
+    features: ["121 генерація/міс (500 токенів)", "Excel + Sheets", "Google Drive + ZIP", "Пріоритетна черга", "API доступ"],
   },
 ] as const;
 
