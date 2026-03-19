@@ -110,7 +110,7 @@ export async function generatePrompts(
   };
 
   const res = await fetch(
-    `${GEMINI_BASE}/gemini-2.5-pro:generateContent?key=${apiKey}`,
+    `${GEMINI_BASE}/gemini-2.5-flash:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

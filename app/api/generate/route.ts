@@ -105,7 +105,7 @@ export async function POST(request: Request) {
         const generationId: string = generation.id;
 
         // ── 6. Generate 8 prompts via Gemini 2.5 Pro ───────────────────────
-        send({ type: "status", message: "Gemini 2.5 Pro: генерую промпти..." });
+        send({ type: "status", message: "Gemini 2.5 Flash: генерую промпти..." });
 
         const prompts = await generatePrompts(apiKey, brand, productType, season, gender, referenceParts);
         send({ type: "prompts_ready", count: prompts.length });
