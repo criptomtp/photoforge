@@ -8,7 +8,7 @@ const navLinks = [
   { href: "/dashboard/generate", label: "Генерація" },
   { href: "/dashboard/batch", label: "Масова" },
   { href: "/dashboard/history", label: "Історія" },
-  { href: "/pricing", label: "Тарифи" },
+  { href: "/dashboard/tokens", label: "Токени" },
 ];
 
 export function Navbar() {
