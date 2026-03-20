@@ -62,7 +62,7 @@ export async function POST(request: Request) {
         // ── 3. Resolve API key (BYOK or platform + token check) ────────────
         send({ type: "status", message: "Перевірка балансу..." });
 
-        let apiKey: string;
+        let apiKey: string | null;
         let byok: boolean;
         let freeQuota: boolean;
 
@@ -105,7 +105,8 @@ export async function POST(request: Request) {
         const generationId: string = generation.id;
 
         // ── 6. Generate 8 prompts via Gemini 2.5 Pro ───────────────────────
-        send({ type: "status", message: "Gemini 2.5 Flash: генерую промпти..." });
+        const provider = byok ? "AI Studio (BYOK)" : apiKey === null ? "Vertex AI" : "AI Studio";
+        send({ type: "status", message: `${provider}: генерую промпти...` });
 
         const prompts = await generatePrompts(apiKey, brand, productType, season, gender, referenceParts);
         send({ type: "prompts_ready", count: prompts.length });

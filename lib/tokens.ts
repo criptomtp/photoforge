@@ -18,7 +18,7 @@ export const TOKEN_COSTS = {
  * freeQuota=true means the generation is covered by the free monthly quota (no token deduction).
  */
 export async function resolveApiKey(userId: string): Promise<{
-  apiKey: string;
+  apiKey: string | null;
   byok: boolean;
   freeQuota: boolean;
 }> {
@@ -34,7 +34,11 @@ export async function resolveApiKey(userId: string): Promise<{
     return { apiKey: decrypt(profile.gemini_api_key), byok: true, freeQuota: false };
   }
 
-  async function getPlatformKey(): Promise<string> {
+  // Platform key resolver: Vertex AI (env) takes priority over AI Studio (DB)
+  async function getPlatformKey(): Promise<string | null> {
+    if (process.env.GOOGLE_VERTEX_SA_KEY) {
+      return null; // null = use Vertex AI with service account
+    }
     const { data: settings } = await supabaseAdmin
       .from("platform_settings")
       .select("gemini_api_key")
@@ -42,7 +46,9 @@ export async function resolveApiKey(userId: string): Promise<{
       .single();
 
     if (!settings?.gemini_api_key) {
-      throw new Error("Platform Gemini API key not configured. Contact admin.");
+      throw new Error(
+        "Gemini API не налаштовано. Зверніться до адміністратора."
+      );
     }
     const { decrypt } = await import("./crypto");
     return decrypt(settings.gemini_api_key);

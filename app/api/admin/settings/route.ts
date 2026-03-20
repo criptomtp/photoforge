@@ -35,7 +35,8 @@ export async function GET() {
       ? `AIza...${decrypt(data.gemini_api_key).slice(-4)}`
       : null;
 
-    return NextResponse.json({ ...data, gemini_api_key: undefined, gemini_api_key_masked });
+    const vertex_ai_active = !!process.env.GOOGLE_VERTEX_SA_KEY;
+    return NextResponse.json({ ...data, gemini_api_key: undefined, gemini_api_key_masked, vertex_ai_active });
   } catch {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }

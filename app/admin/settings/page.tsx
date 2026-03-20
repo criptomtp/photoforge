@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 interface PlatformSettings {
   gemini_api_key_masked: string;
+  vertex_ai_active: boolean;
   cost_per_prompt_gen: number;
   cost_per_image_gen: number;
   free_plan_tokens: number;
@@ -95,22 +96,46 @@ export default function AdminSettingsPage() {
       )}
 
       <form onSubmit={handleSave} className="space-y-6">
-        {/* Gemini API Key */}
+        {/* Gemini API Key / Vertex AI */}
         <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-6 space-y-4">
-          <h2 className="font-heading text-lg font-bold text-[#F5F0EB]">Platform Gemini API Key</h2>
-          <div className={`bg-[#0C0B0A] border rounded-lg px-4 py-2.5 text-sm font-mono ${settings.gemini_api_key_masked ? "border-[#2A2723] text-[#6B6560]" : "border-red-500/40 text-red-400"}`}>
-            {settings.gemini_api_key_masked || "❌ Не встановлено"}
+          <div className="flex items-center justify-between">
+            <h2 className="font-heading text-lg font-bold text-[#F5F0EB]">Gemini API — джерело</h2>
+            {settings.vertex_ai_active ? (
+              <span className="text-xs font-medium bg-green-500/15 text-green-400 border border-green-500/30 px-3 py-1 rounded-full">
+                ✓ Vertex AI активний
+              </span>
+            ) : (
+              <span className="text-xs font-medium bg-[#2A2723] text-[#6B6560] px-3 py-1 rounded-full">
+                AI Studio
+              </span>
+            )}
           </div>
-          <div>
-            <label className="block text-sm text-[#6B6560] mb-1.5">Новий ключ (залиш пустим, щоб не змінювати)</label>
-            <input
-              type="password"
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder="AIza..."
-              className="w-full bg-[#0C0B0A] border border-[#2A2723] rounded-lg px-4 py-2.5 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors text-sm font-mono"
-            />
-          </div>
+
+          {settings.vertex_ai_active ? (
+            <div className="bg-green-500/10 border border-green-500/20 rounded-lg px-4 py-3 text-sm text-green-400">
+              Використовується Vertex AI (Service Account). $300 Google Cloud кредити застосовуються.
+              Env vars: <code className="font-mono">GOOGLE_VERTEX_SA_KEY</code>, <code className="font-mono">GOOGLE_CLOUD_PROJECT</code>, <code className="font-mono">GOOGLE_CLOUD_LOCATION</code>
+            </div>
+          ) : (
+            <>
+              <div className={`bg-[#0C0B0A] border rounded-lg px-4 py-2.5 text-sm font-mono ${settings.gemini_api_key_masked ? "border-[#2A2723] text-[#6B6560]" : "border-red-500/40 text-red-400"}`}>
+                {settings.gemini_api_key_masked || "❌ Не встановлено"}
+              </div>
+              <div>
+                <label className="block text-sm text-[#6B6560] mb-1.5">Новий AI Studio ключ (залиш пустим, щоб не змінювати)</label>
+                <input
+                  type="password"
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                  placeholder="AIza..."
+                  className="w-full bg-[#0C0B0A] border border-[#2A2723] rounded-lg px-4 py-2.5 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors text-sm font-mono"
+                />
+              </div>
+              <p className="text-[#6B6560] text-xs">
+                Щоб використовувати Vertex AI ($300 кредити), додай <code className="font-mono text-[#E8943A]">GOOGLE_VERTEX_SA_KEY</code> до Vercel env vars.
+              </p>
+            </>
+          )}
         </div>
 
         {/* Token costs */}

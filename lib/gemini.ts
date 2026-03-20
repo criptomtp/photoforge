@@ -1,4 +1,36 @@
-const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+const STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+
+/**
+ * Routes a generateContent request to either:
+ * - Google AI Studio (BYOK) when apiKey is a string
+ * - Vertex AI (platform) when apiKey is null
+ */
+async function callGenerateContent(
+  model: string,
+  body: object,
+  apiKey: string | null
+): Promise<Response> {
+  if (apiKey !== null) {
+    return fetch(`${STUDIO_BASE}/${model}:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Vertex AI path
+  const { getVertexToken, VERTEX_PROJECT, VERTEX_LOCATION } = await import("./vertex-auth");
+  const token = await getVertexToken();
+  const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
 
 const SYSTEM_PROMPT = `Ти — висококваліфікований експерт-стиліст та промпт-інженер для комерційної ШІ-генерації фото (подібно до NanoBanana/Imagen). Твоє завдання — створити ВІСІМ (8) окремих фотореалістичних промптів, кожен з яких описує інший ракурс одного й того самого товару, використовуючи референси та текстовий опис.
 
@@ -83,7 +115,7 @@ export interface GeminiImagePart {
 }
 
 export async function generatePrompts(
-  apiKey: string,
+  apiKey: string | null,
   brand: string,
   productType: string,
   season: string,
@@ -109,18 +141,16 @@ export async function generatePrompts(
     ],
   };
 
-  const res = await fetch(
-    `${GEMINI_BASE}/gemini-2.5-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
+  // Use Vertex model when on platform, AI Studio model for BYOK
+  const model = apiKey === null
+    ? (await import("./vertex-auth")).VERTEX_PROMPT_MODEL
+    : "gemini-2.5-flash";
+
+  const res = await callGenerateContent(model, body, apiKey);
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini Pro error ${res.status}: ${err}`);
+    throw new Error(`Gemini Flash error ${res.status}: ${err}`);
   }
 
   const data = await res.json();
@@ -140,7 +170,7 @@ export async function generatePrompts(
 }
 
 export async function generateImage(
-  apiKey: string,
+  apiKey: string | null,
   prompt: string,
   referenceImages: GeminiImagePart[]
 ): Promise<string> {
@@ -162,21 +192,32 @@ export async function generateImage(
     },
   };
 
-  const res = await fetch(
-    `${GEMINI_BASE}/gemini-2.5-flash-preview-05-20:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify(body),
-    }
-  );
+  // AI Studio uses a special preview model; Vertex AI uses its own image model
+  const model = apiKey === null
+    ? (await import("./vertex-auth")).VERTEX_IMAGE_MODEL
+    : "gemini-2.5-flash-preview-05-20";
+
+  // AI Studio image gen requires x-goog-api-key header (not query param)
+  let res: Response;
+  if (apiKey !== null) {
+    res = await fetch(
+      `${STUDIO_BASE}/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify(body),
+      }
+    );
+  } else {
+    res = await callGenerateContent(model, body, null);
+  }
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini Flash error ${res.status}: ${err}`);
+    throw new Error(`Gemini image error ${res.status}: ${err}`);
   }
 
   const data = await res.json();
