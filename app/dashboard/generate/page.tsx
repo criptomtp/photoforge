@@ -19,8 +19,8 @@ const ANGLE_NAMES = [
 
 type GenerationState =
   | { phase: "idle" }
-  | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[] }
-  | { phase: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string }
+  | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[]; imageErrors: string[] }
+  | { phase: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string; imageErrors: string[] }
   | { phase: "error"; message: string };
 
 export default function GeneratePage() {
@@ -49,7 +49,7 @@ export default function GeneratePage() {
     e.preventDefault();
 
     abortRef.current = new AbortController();
-    setState({ phase: "running", status: "Підготовка...", current: 0, total: 8, urls: Array(8).fill(null) });
+    setState({ phase: "running", status: "Підготовка...", current: 0, total: 8, urls: Array(8).fill(null), imageErrors: [] });
 
     const formData = new FormData();
     formData.append("brand", brand);
@@ -114,12 +114,22 @@ export default function GeneratePage() {
                 if (s.phase !== "running") return s;
                 const urls = [...s.urls];
                 urls[event.index - 1] = event.url || null;
-                return { ...s, current: event.index, urls };
+                const imageErrors = event.error
+                  ? [...s.imageErrors, `Фото ${event.index}: ${event.error}`]
+                  : s.imageErrors;
+                return { ...s, current: event.index, urls, imageErrors };
               });
               break;
 
             case "done":
-              setState({ phase: "done", generationId: event.generationId, urls: event.urls, byok: event.byok, driveUrl: event.driveUrl });
+              setState((s) => ({
+                phase: "done",
+                generationId: event.generationId,
+                urls: event.urls,
+                byok: event.byok,
+                driveUrl: event.driveUrl,
+                imageErrors: s.phase === "running" ? s.imageErrors : [],
+              }));
               break;
 
             case "error":
@@ -340,6 +350,17 @@ export default function GeneratePage() {
 
           {isDone && (
             <div className="space-y-4">
+              {state.imageErrors.length > 0 && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 space-y-1">
+                  <p className="text-red-400 text-sm font-medium">Помилки генерації:</p>
+                  {state.imageErrors.slice(0, 2).map((e, i) => (
+                    <p key={i} className="text-red-400/80 text-xs font-mono break-all">{e}</p>
+                  ))}
+                  {state.imageErrors.length > 2 && (
+                    <p className="text-red-400/60 text-xs">+{state.imageErrors.length - 2} ще...</p>
+                  )}
+                </div>
+              )}
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
                   <p className="text-[#F5F0EB] font-medium">

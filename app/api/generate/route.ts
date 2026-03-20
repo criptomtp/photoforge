@@ -134,9 +134,10 @@ export async function POST(request: Request) {
               .update({ images_generated: imagesGenerated })
               .eq("id", generationId);
           } catch (imgErr) {
-            console.error(`Image ${i + 1} failed:`, imgErr);
+            const errMsg = imgErr instanceof Error ? imgErr.message : String(imgErr);
+            console.error(`Image ${i + 1} failed:`, errMsg);
             imageUrls.push("");
-            send({ type: "image_done", index: i + 1, url: "" });
+            send({ type: "image_done", index: i + 1, url: "", error: errMsg } as never);
           }
         }
 
