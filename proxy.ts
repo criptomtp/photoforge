@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const ADMIN_EMAIL = "criptomtp@gmail.com";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "criptomtp@gmail.com";
 
 export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });

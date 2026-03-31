@@ -1,15 +1,10 @@
 import { getStripe, TOKEN_PACKS, SUBSCRIPTION_PLANS, type PlanId } from "@/lib/stripe";
 import { creditTokens } from "@/lib/tokens";
-import { createClient as createAdmin } from "@supabase/supabase-js";
+import { supabaseAdmin as admin } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 
 export const runtime = "nodejs";
-
-const admin = createAdmin(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 async function getUserIdByCustomer(customerId: string): Promise<string | null> {
   const { data } = await admin

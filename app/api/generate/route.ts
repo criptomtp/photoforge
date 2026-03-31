@@ -200,18 +200,8 @@ export async function POST(request: Request) {
           })
           .eq("id", generationId);
 
-        // Increment usage counter
-        const { data: pf } = await supabase
-          .from("profiles")
-          .select("generations_used")
-          .eq("id", user.id)
-          .single();
-        if (pf) {
-          await supabase
-            .from("profiles")
-            .update({ generations_used: pf.generations_used + 1 })
-            .eq("id", user.id);
-        }
+        // Increment usage counter (atomic)
+        await supabase.rpc("increment_generations_used", { p_user_id: user.id });
 
         send({ type: "done", generationId, urls: imageUrls, byok, driveUrl: driveFolderUrl });
         controller.close();

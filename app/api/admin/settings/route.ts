@@ -1,9 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
-import { createClient as createAdmin } from "@supabase/supabase-js";
+import { supabaseAdmin as admin } from "@/lib/supabase/admin";
+import { ADMIN_EMAIL } from "@/lib/constants";
 import { encrypt, decrypt } from "@/lib/crypto";
 import { NextResponse } from "next/server";
-
-const ADMIN_EMAIL = "criptomtp@gmail.com";
 
 async function assertAdmin() {
   const supabase = await createClient();
@@ -13,11 +12,6 @@ async function assertAdmin() {
   }
   return user;
 }
-
-const admin = createAdmin(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export async function GET() {
   try {

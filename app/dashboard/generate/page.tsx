@@ -36,11 +36,14 @@ export default function GeneratePage() {
 
   function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []).slice(0, 9);
+    // Revoke old object URLs to prevent memory leak
+    previews.forEach((url) => URL.revokeObjectURL(url));
     setImages(files);
     setPreviews(files.map((f) => URL.createObjectURL(f)));
   }
 
   function removeImage(idx: number) {
+    URL.revokeObjectURL(previews[idx]);
     setImages((prev) => prev.filter((_, i) => i !== idx));
     setPreviews((prev) => prev.filter((_, i) => i !== idx));
   }
@@ -84,7 +87,8 @@ export default function GeneratePage() {
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
-          const event = JSON.parse(line.slice(6));
+          let event;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
 
           switch (event.type) {
             case "status":

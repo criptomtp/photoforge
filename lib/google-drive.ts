@@ -1,5 +1,5 @@
 import { encrypt, decrypt } from "./crypto";
-import { createClient as createAdmin } from "@supabase/supabase-js";
+import { supabaseAdmin as admin } from "./supabase/admin";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/drive.file",
@@ -7,11 +7,6 @@ const SCOPES = [
 ].join(" ");
 
 const REDIRECT_URI = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/google/callback`;
-
-const admin = createAdmin(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 // ── OAuth URL ──────────────────────────────────────────────────────────────
 

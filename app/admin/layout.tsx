@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
+import { ADMIN_EMAIL } from "@/lib/constants";
 
 const adminLinks = [
   { href: "/admin/settings", label: "⚙️ Налаштування платформи" },
@@ -12,7 +13,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  if (!user || user.email !== "criptomtp@gmail.com") {
+  if (!user || user.email !== ADMIN_EMAIL) {
     redirect("/dashboard");
   }
 

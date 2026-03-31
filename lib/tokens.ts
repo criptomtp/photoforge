@@ -1,10 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
-
-// Service-role client for atomic token operations
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { supabaseAdmin } from "./supabase/admin";
 
 export const TOKEN_COSTS = {
   prompt_gen: 0.10,   // Gemini 2.5 Pro call (1 per generation)
@@ -123,18 +117,12 @@ export async function creditTokens(
   kind: "purchase" | "bonus" | "refund",
   description: string
 ): Promise<void> {
-  const { data: profile } = await supabaseAdmin
-    .from("profiles")
-    .select("token_balance")
-    .eq("id", userId)
-    .single();
+  const { data: newBalance, error } = await supabaseAdmin.rpc(
+    "credit_tokens",
+    { p_user_id: userId, p_amount: amount }
+  );
 
-  const newBalance = Number(profile?.token_balance ?? 0) + amount;
-
-  await supabaseAdmin
-    .from("profiles")
-    .update({ token_balance: newBalance })
-    .eq("id", userId);
+  if (error) throw new Error(`Token credit failed: ${error.message}`);
 
   await supabaseAdmin.from("token_transactions").insert({
     user_id: userId,

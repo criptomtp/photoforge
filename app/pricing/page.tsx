@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SUBSCRIPTION_PLANS } from "@/lib/stripe";
 
 const plans = [
   {
@@ -7,27 +8,18 @@ const plans = [
     period: "/місяць",
     features: ["5 генерацій/міс", "Водяний знак", "Збереження 7 днів"],
     cta: "Почати безкоштовно",
-    href: "/dashboard",
+    href: "/register",
     accent: false,
   },
-  {
-    name: "Starter",
-    price: "$29",
+  ...SUBSCRIPTION_PLANS.map((plan) => ({
+    name: plan.label,
+    price: `$${plan.usd}`,
     period: "/місяць",
-    features: ["100 генерацій/міс", "Google Sheets", "Google Drive", "Без водяного знаку"],
-    cta: "Обрати Starter",
-    href: "/dashboard",
-    accent: false,
-  },
-  {
-    name: "Pro",
-    price: "$79",
-    period: "/місяць",
-    features: ["500 генерацій/міс", "Excel + Sheets", "Google Drive + ZIP", "Пріоритетна черга", "API доступ"],
-    cta: "Обрати Pro",
-    href: "/dashboard",
-    accent: true,
-  },
+    features: plan.features,
+    cta: `Обрати ${plan.label}`,
+    href: "/dashboard/tokens",
+    accent: plan.id === "pro",
+  })),
   {
     name: "Enterprise",
     price: "Custom",
@@ -44,7 +36,7 @@ export default function PricingPage() {
     <div className="min-h-screen bg-[#0C0B0A]">
       <nav className="border-b border-[#2A2723] px-6 h-16 flex items-center justify-between max-w-7xl mx-auto">
         <Link href="/" className="font-heading text-xl font-bold text-[#E8943A]">PhotoForge</Link>
-        <Link href="/dashboard" className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+        <Link href="/login" className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg transition-colors">
           Увійти
         </Link>
       </nav>

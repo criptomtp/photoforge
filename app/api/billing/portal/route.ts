@@ -1,12 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
-import { createClient as createAdmin } from "@supabase/supabase-js";
+import { supabaseAdmin as admin } from "@/lib/supabase/admin";
 import { getStripe } from "@/lib/stripe";
 import { NextResponse } from "next/server";
-
-const admin = createAdmin(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 export async function POST() {
   const supabase = await createClient();
