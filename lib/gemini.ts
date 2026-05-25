@@ -1,4 +1,9 @@
+import type { AngleDef } from "./angles";
+
 const STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+
+const UA_NUM = ["", "ОДИН", "ДВА", "ТРИ", "ЧОТИРИ", "П'ЯТЬ", "ШІСТЬ", "СІМ", "ВІСІМ"] as const;
+const numWord = (n: number) => UA_NUM[n] ?? String(n);
 
 /**
  * Routes a generateContent request to either:
@@ -32,7 +37,12 @@ async function callGenerateContent(
   });
 }
 
-const SYSTEM_PROMPT = `Ти — висококваліфікований експерт-стиліст та промпт-інженер для комерційної ШІ-генерації фото (подібно до NanoBanana/Imagen). Твоє завдання — створити ВІСІМ (8) окремих фотореалістичних промптів, кожен з яких описує інший ракурс одного й того самого товару, використовуючи референси та текстовий опис.
+function buildSystemPrompt(angles: AngleDef[]): string {
+  const N = angles.length;
+  const angleList = angles
+    .map((a, i) => `${i + 1}. ${a.label} — ${a.desc}`)
+    .join("\n");
+  return `Ти — висококваліфікований експерт-стиліст та промпт-інженер для комерційної ШІ-генерації фото (подібно до NanoBanana/Imagen). Твоє завдання — створити ${numWord(N)} (${N}) окремих фотореалістичних промптів, кожен з яких описує інший ракурс одного й того самого товару, використовуючи референси та текстовий опис.
 
 ОБОВ'ЯЗКОВІ ПРАВИЛА:
 
@@ -65,22 +75,16 @@ const SYSTEM_PROMPT = `Ти — висококваліфікований екс�
 — Відтворюй товар максимально точно: форма, колір, текстура, матеріал, шви, логотипи, написи, декоративні елементи.
 — Руки й тіло моделі мають природно взаємодіяти з товаром.
 
-6) РАКУРСИ (ВСЬОГО 8):
-1. Full-body front view — повний зріст спереду, товар добре видно.
-2. Full-body side view — повний зріст збоку.
-3. Full-body back view — повний зріст ззаду, видно силует і посадку товару.
-4. 3/4 front view — ракурс 3/4 спереду, акцент на ключових деталях.
-5. 3/4 back view — ракурс 3/4 ззаду, акцент на спинці, швах і посадці.
-6. Close-up detail shot — великий план важливої деталі (текстура, шви, логотип, фурнітура).
-7. Medium action shot — середній план в русі / дії.
-8. Creative realistic shot — креативний, але реалістичний кадр.
+6) РАКУРСИ (ВСЬОГО ${N}):
+${angleList}
 
 ФОРМАТ ВИВОДУ:
-— Поверни рівно 8 промптів послідовно.
+— Поверни рівно ${N} промптів послідовно.
 — Кожен промпт повинен починатися зі слова PROMPT:
 — Одразу після PROMPT: вставляєш однаковий опис обраної моделі згідно правил вище.
 — Потім додаєш детальний опис конкретного ракурсу, фону, сезонного одягу та сцени.
 — Не додавай інших службових пояснень чи коментарів.`;
+}
 
 const IMAGE_INSTRUCTIONS = `ВИКОРИСТАННЯ РЕФЕРЕНСУ:
 — Додане фото використовуй ТІЛЬКИ для розуміння товару: форма, колір, текстура, шви, логотипи, посадка, положення рук.
@@ -120,13 +124,15 @@ export async function generatePrompts(
   productType: string,
   season: string,
   gender: string,
-  referenceImages: GeminiImagePart[]
+  referenceImages: GeminiImagePart[],
+  angles: AngleDef[]
 ): Promise<string[]> {
+  const N = angles.length;
   const imageParts = referenceImages.map((img) => ({ inline_data: img.inline_data }));
 
   const body = {
     systemInstruction: {
-      parts: [{ text: SYSTEM_PROMPT }],
+      parts: [{ text: buildSystemPrompt(angles) }],
     },
     contents: [
       {
@@ -134,7 +140,7 @@ export async function generatePrompts(
         parts: [
           ...imageParts,
           {
-            text: `Опис товару: Бренд: ${brand}\nВид: ${productType}\nСезонність: ${season}\nGender / цільова аудиторія: ${gender}\nСтвори 8 детальних промптів згідно з правилами вище.`,
+            text: `Опис товару: Бренд: ${brand}\nВид: ${productType}\nСезонність: ${season}\nGender / цільова аудиторія: ${gender}\nСтвори ${N} детальних промптів згідно з правилами вище.`,
           },
         ],
       },
@@ -162,11 +168,11 @@ export async function generatePrompts(
     .map((s: string) => s.trim())
     .filter((s: string) => s.length > 50);
 
-  if (prompts.length < 8) {
-    throw new Error(`Expected 8 prompts, got ${prompts.length}`);
+  if (prompts.length < N) {
+    throw new Error(`Expected ${N} prompts, got ${prompts.length}`);
   }
 
-  return prompts.slice(0, 8);
+  return prompts.slice(0, N);
 }
 
 export async function generateImage(

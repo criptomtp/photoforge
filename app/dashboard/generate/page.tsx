@@ -1,26 +1,16 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { ANGLE_DEFS, PRESETS, costForAngles } from "@/lib/angles";
 
 const SEASONS = ["Зима", "Осінь", "Літо", "Демісезон"];
 const GENDERS = ["Чоловіча", "Жіноча", "Хлопчик", "Дівчинка", "Унісекс"];
 
-const ANGLE_NAMES = [
-  "Full-body front",
-  "Full-body side",
-  "Full-body back",
-  "3/4 front",
-  "3/4 back",
-  "Close-up detail",
-  "Action shot",
-  "Creative shot",
-];
-
 type GenerationState =
   | { phase: "idle" }
-  | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[]; imageErrors: string[] }
-  | { phase: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string; imageErrors: string[] }
+  | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[]; imageErrors: string[]; angleLabels: string[] }
+  | { phase: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string; imageErrors: string[]; angleLabels: string[]; cost: number }
   | { phase: "error"; message: string };
 
 export default function GeneratePage() {
@@ -30,13 +20,23 @@ export default function GeneratePage() {
   const [gender, setGender] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
+
+  // ── Angle selection ─────────────────────────────────────────────────────
+  const [presetId, setPresetId] = useState<string>("full");
+  const [customAngles, setCustomAngles] = useState<string[]>(PRESETS[0].angles.slice());
+  const isCustom = presetId === "custom";
+  const selectedAngles = isCustom
+    ? customAngles
+    : (PRESETS.find((p) => p.id === presetId)?.angles.slice() ?? []);
+
+  const cost = useMemo(() => costForAngles(selectedAngles.length), [selectedAngles.length]);
+
   const [state, setState] = useState<GenerationState>({ phase: "idle" });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []).slice(0, 9);
-    // Revoke old object URLs to prevent memory leak
     previews.forEach((url) => URL.revokeObjectURL(url));
     setImages(files);
     setPreviews(files.map((f) => URL.createObjectURL(f)));
@@ -48,11 +48,40 @@ export default function GeneratePage() {
     setPreviews((prev) => prev.filter((_, i) => i !== idx));
   }
 
+  function selectPreset(id: string) {
+    setPresetId(id);
+    if (id !== "custom") {
+      const preset = PRESETS.find((p) => p.id === id);
+      if (preset) setCustomAngles(preset.angles.slice());
+    }
+  }
+
+  function toggleCustomAngle(angleId: string) {
+    setPresetId("custom");
+    setCustomAngles((prev) =>
+      prev.includes(angleId) ? prev.filter((id) => id !== angleId) : [...prev, angleId]
+    );
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
+    if (selectedAngles.length === 0) return;
+
+    // Resolve labels in canonical order to mirror the API
+    const angleLabels = ANGLE_DEFS.filter((a) => selectedAngles.includes(a.id)).map((a) => a.label);
+    const N = angleLabels.length;
+
     abortRef.current = new AbortController();
-    setState({ phase: "running", status: "Підготовка...", current: 0, total: 8, urls: Array(8).fill(null), imageErrors: [] });
+    setState({
+      phase: "running",
+      status: "Підготовка...",
+      current: 0,
+      total: N,
+      urls: Array(N).fill(null),
+      imageErrors: [],
+      angleLabels,
+    });
 
     const formData = new FormData();
     formData.append("brand", brand);
@@ -60,6 +89,10 @@ export default function GeneratePage() {
     formData.append("season", season);
     formData.append("gender", gender);
     images.forEach((img) => formData.append("images", img));
+    // Send angles in canonical order
+    ANGLE_DEFS.forEach((a) => {
+      if (selectedAngles.includes(a.id)) formData.append("angles", a.id);
+    });
 
     try {
       const res = await fetch("/api/generate", {
@@ -133,6 +166,8 @@ export default function GeneratePage() {
                 byok: event.byok,
                 driveUrl: event.driveUrl,
                 imageErrors: s.phase === "running" ? s.imageErrors : [],
+                angleLabels: s.phase === "running" ? s.angleLabels : angleLabels,
+                cost: event.cost ?? 0,
               }));
               break;
 
@@ -163,7 +198,8 @@ export default function GeneratePage() {
         if (!url) return;
         const res = await fetch(url);
         const blob = await res.blob();
-        zip.file(`${brand}_${ANGLE_NAMES[i]?.replace(/ /g, "_")}.jpg`, blob);
+        const label = state.angleLabels[i]?.replace(/ /g, "_") ?? `angle_${i + 1}`;
+        zip.file(`${brand}_${label}.jpg`, blob);
       })
     );
     const blob = await zip.generateAsync({ type: "blob" });
@@ -175,12 +211,13 @@ export default function GeneratePage() {
 
   const isRunning = state.phase === "running";
   const isDone = state.phase === "done";
+  const canSubmit = selectedAngles.length > 0 && images.length > 0 && brand.trim() && productType.trim();
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="font-heading text-3xl font-bold text-[#F5F0EB]">Генерація фото</h1>
-        <p className="text-[#6B6560] mt-1">Заповніть форму та завантажте референс — отримайте 8 фото</p>
+        <p className="text-[#6B6560] mt-1">Оберіть ракурси, заповніть форму та завантажте референс</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -238,6 +275,69 @@ export default function GeneratePage() {
             </div>
           </div>
 
+          {/* ── Angle picker ───────────────────────────────────────────── */}
+          <div>
+            <label className="block text-sm text-[#6B6560] mb-2">
+              Ракурси <span className="text-[#F5F0EB]">({selectedAngles.length})</span>
+            </label>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {PRESETS.map((preset) => (
+                <button
+                  type="button"
+                  key={preset.id}
+                  onClick={() => selectPreset(preset.id)}
+                  disabled={isRunning}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                    presetId === preset.id
+                      ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]"
+                      : "bg-[#161412] border-[#2A2723] text-[#6B6560] hover:border-[#E8943A] hover:text-[#F5F0EB]"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => selectPreset("custom")}
+                disabled={isRunning}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                  isCustom
+                    ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]"
+                    : "bg-[#161412] border-[#2A2723] text-[#6B6560] hover:border-[#E8943A] hover:text-[#F5F0EB]"
+                }`}
+              >
+                Custom...
+              </button>
+            </div>
+
+            {isCustom && (
+              <div className="grid grid-cols-2 gap-2 bg-[#161412] border border-[#2A2723] rounded-lg p-3">
+                {ANGLE_DEFS.map((a) => {
+                  const checked = customAngles.includes(a.id);
+                  return (
+                    <label
+                      key={a.id}
+                      className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
+                        checked ? "bg-[#E8943A]/10" : "hover:bg-[#1E1C19]"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleCustomAngle(a.id)}
+                        disabled={isRunning}
+                        className="mt-1 accent-[#E8943A]"
+                      />
+                      <span className={`text-xs ${checked ? "text-[#F5F0EB]" : "text-[#6B6560]"}`}>
+                        {a.label}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* Image upload */}
           <div>
             <label className="block text-sm text-[#6B6560] mb-2">
@@ -289,13 +389,25 @@ export default function GeneratePage() {
             </div>
           )}
 
+          {/* Cost preview */}
+          <div className="bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-sm flex items-center justify-between">
+            <span className="text-[#6B6560]">
+              Вартість: <span className="text-[#F5F0EB] font-medium">{cost.toFixed(2)} токенів</span>
+            </span>
+            <span className="text-[#6B6560] text-xs">
+              {selectedAngles.length} × 0.50 + 0.10 (промпт)
+            </span>
+          </div>
+
           <div className="flex gap-3">
             <button
               type="submit"
-              disabled={isRunning}
+              disabled={isRunning || !canSubmit}
               className="flex-1 bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-4 rounded-xl transition-colors"
             >
-              {isRunning ? "Генерація..." : "Згенерувати 8 фото"}
+              {isRunning
+                ? "Генерація..."
+                : `Згенерувати ${selectedAngles.length} ${selectedAngles.length === 1 ? "фото" : "фото"}`}
             </button>
             {isRunning && (
               <button
@@ -316,12 +428,12 @@ export default function GeneratePage() {
               <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-5">
                 <div className="flex items-center justify-between mb-3">
                   <p className="text-[#F5F0EB] text-sm font-medium">{state.status}</p>
-                  <span className="text-[#6B6560] text-xs">{state.current}/8</span>
+                  <span className="text-[#6B6560] text-xs">{state.current}/{state.total}</span>
                 </div>
                 <div className="w-full bg-[#2A2723] rounded-full h-1.5">
                   <div
                     className="bg-[#E8943A] h-1.5 rounded-full transition-all duration-500"
-                    style={{ width: `${(state.current / 8) * 100}%` }}
+                    style={{ width: `${(state.current / state.total) * 100}%` }}
                   />
                 </div>
               </div>
@@ -340,7 +452,7 @@ export default function GeneratePage() {
                   >
                     {url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={url} alt={ANGLE_NAMES[i]} className="w-full h-full object-cover" />
+                      <img src={url} alt={state.angleLabels[i] ?? ""} className="w-full h-full object-cover" />
                     ) : (
                       <span className={i === state.current ? "text-[#E8943A]" : "text-[#6B6560]"}>
                         {i + 1}
@@ -370,9 +482,15 @@ export default function GeneratePage() {
                   <p className="text-[#F5F0EB] font-medium">
                     ✓ {state.urls.filter(Boolean).length} фото згенеровано
                   </p>
-                  <div className="flex gap-2 mt-1">
-                    {state.byok && (
-                      <span className="text-[10px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded">BYOK</span>
+                  <div className="flex gap-2 mt-1 flex-wrap items-center">
+                    {state.byok ? (
+                      <span className="text-[10px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded">BYOK — без списання</span>
+                    ) : state.cost > 0 ? (
+                      <span className="text-[10px] bg-[#E8943A]/20 text-[#E8943A] px-2 py-0.5 rounded">
+                        Списано {state.cost.toFixed(2)} токенів
+                      </span>
+                    ) : (
+                      <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded">Free quota</span>
                     )}
                     {state.driveUrl && (
                       <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded">Drive ✓</span>
@@ -414,7 +532,7 @@ export default function GeneratePage() {
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={url}
-                            alt={ANGLE_NAMES[i]}
+                            alt={state.angleLabels[i] ?? ""}
                             className="w-full h-full object-cover hover:scale-105 transition-transform"
                           />
                         </a>
@@ -424,7 +542,7 @@ export default function GeneratePage() {
                         </div>
                       )}
                     </div>
-                    <p className="text-[#6B6560] text-xs text-center truncate">{ANGLE_NAMES[i]}</p>
+                    <p className="text-[#6B6560] text-xs text-center truncate">{state.angleLabels[i]}</p>
                   </div>
                 ))}
               </div>
@@ -442,7 +560,7 @@ export default function GeneratePage() {
             <div className="border border-dashed border-[#2A2723] rounded-xl p-8 text-center">
               <p className="text-[#6B6560] text-sm">
                 Заповніть форму зліва та натисніть<br />
-                <span className="text-[#F5F0EB]">"Згенерувати 8 фото"</span>
+                <span className="text-[#F5F0EB]">&quot;Згенерувати&quot;</span>
               </p>
             </div>
           )}

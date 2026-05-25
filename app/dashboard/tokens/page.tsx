@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { TOKEN_PACKS, SUBSCRIPTION_PLANS } from "@/lib/stripe";
+import { FULL_RUN_COST } from "@/lib/angles";
 
 interface Profile {
   plan: string;
@@ -102,7 +103,7 @@ function TokensContent() {
               {profile.token_balance.toFixed(1)}
             </p>
             <p className="text-[#6B6560] text-xs mt-1">
-              ≈ {Math.floor(profile.token_balance / 4.1)} повних генерацій
+              ≈ {Math.floor(profile.token_balance / FULL_RUN_COST)} повних генерацій
             </p>
           </div>
           <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-5">

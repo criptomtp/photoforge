@@ -1,10 +1,7 @@
 import { supabaseAdmin } from "./supabase/admin";
+import { TOKEN_COSTS, FULL_RUN_COST, costForAngles } from "./angles";
 
-export const TOKEN_COSTS = {
-  prompt_gen: 0.10,   // Gemini 2.5 Pro call (1 per generation)
-  image_gen: 0.50,    // Gemini 2.5 Flash Image (×8 per generation)
-  total_per_run: 0.10 + 0.50 * 8, // = 4.10 tokens per full generation
-};
+export { TOKEN_COSTS, FULL_RUN_COST, costForAngles };
 
 /**
  * Resolves which Gemini API key to use and validates token balance.
@@ -58,9 +55,10 @@ export async function resolveApiKey(userId: string): Promise<{
     return { apiKey, byok: false, freeQuota: true };
   }
 
-  // 3. Paid plans / extra generations — check token balance
+  // 3. Paid plans / extra generations — check token balance.
+  // We require enough for at least one image; per-angle deduction happens after.
   const balance: number = Number(profile?.token_balance ?? 0);
-  const required = TOKEN_COSTS.total_per_run;
+  const required = TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen;
 
   if (balance < required) {
     if (plan === "free") {
@@ -87,7 +85,7 @@ export async function deductTokens(
   userId: string,
   generationId: string,
   imagesGenerated: number
-): Promise<void> {
+): Promise<number> {
   const cost = TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * imagesGenerated;
 
   // Atomic update using RPC to avoid race conditions
@@ -106,6 +104,8 @@ export async function deductTokens(
     generation_id: generationId,
     balance_after: newBalance,
   });
+
+  return cost;
 }
 
 /**

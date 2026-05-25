@@ -3,6 +3,7 @@ import { generatePrompts, generateImage, type GeminiImagePart } from "@/lib/gemi
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveApiKey, deductTokens } from "@/lib/tokens";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
+import { ANGLE_DEFS, resolveAngles } from "@/lib/angles";
 
 export const maxDuration = 300;
 
@@ -11,19 +12,8 @@ type SSEEvent =
   | { type: "prompts_ready"; count: number }
   | { type: "image_start"; index: number; total: number; angle: string }
   | { type: "image_done"; index: number; url: string; error?: string }
-  | { type: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string }
+  | { type: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string; cost: number }
   | { type: "error"; message: string };
-
-const ANGLE_NAMES = [
-  "Full-body front",
-  "Full-body side",
-  "Full-body back",
-  "3/4 front",
-  "3/4 back",
-  "Close-up detail",
-  "Action shot",
-  "Creative shot",
-];
 
 export async function POST(request: Request) {
   const encoder = new TextEncoder();
@@ -42,12 +32,21 @@ export async function POST(request: Request) {
         const season      = formData.get("season") as string;
         const gender      = formData.get("gender") as string;
         const imageFiles  = formData.getAll("images") as File[];
+        const angleIds    = formData.getAll("angles") as string[];
 
         if (imageFiles.length === 0) {
           send({ type: "error", message: "Завантажте хоча б одне референс-фото" });
           controller.close();
           return;
         }
+
+        const angles = angleIds.length > 0 ? resolveAngles(angleIds) : [...ANGLE_DEFS];
+        if (angles.length === 0) {
+          send({ type: "error", message: "Оберіть хоча б один ракурс" });
+          controller.close();
+          return;
+        }
+        const N = angles.length;
 
         // ── 2. Auth ─────────────────────────────────────────────────────────
         const supabase = await createClient();
@@ -108,7 +107,7 @@ export async function POST(request: Request) {
         const provider = byok ? "AI Studio (BYOK)" : apiKey === null ? "Vertex AI" : "AI Studio";
         send({ type: "status", message: `${provider}: генерую промпти...` });
 
-        const prompts = await generatePrompts(apiKey, brand, productType, season, gender, referenceParts);
+        const prompts = await generatePrompts(apiKey, brand, productType, season, gender, referenceParts, angles);
         send({ type: "prompts_ready", count: prompts.length });
 
         // ── 7. Generate images via Gemini 2.5 Flash ────────────────────────
@@ -117,8 +116,8 @@ export async function POST(request: Request) {
         let imagesGenerated = 0;
 
         for (let i = 0; i < prompts.length; i++) {
-          const angleName = ANGLE_NAMES[i] ?? `Ракурс ${i + 1}`;
-          send({ type: "image_start", index: i + 1, total: 8, angle: angleName });
+          const angleName = angles[i]?.label ?? `Ракурс ${i + 1}`;
+          send({ type: "image_start", index: i + 1, total: N, angle: angleName });
 
           try {
             const base64Image = await generateImage(apiKey, prompts[i], referenceParts);
@@ -165,7 +164,7 @@ export async function POST(request: Request) {
                 await uploadFileToDrive(
                   driveToken,
                   folderId,
-                  `${ANGLE_NAMES[i]?.replace(/ /g, "_")}.jpg`,
+                  `${angles[i]?.label?.replace(/ /g, "_") ?? `angle_${i + 1}`}.jpg`,
                   b64
                 );
               } catch (e) {
@@ -180,9 +179,10 @@ export async function POST(request: Request) {
         }
 
         // ── 9. Deduct tokens if using platform key (not free quota) ───────
+        let cost = 0;
         if (!byok && !freeQuota && imagesGenerated > 0) {
           try {
-            await deductTokens(user.id, generationId, imagesGenerated);
+            cost = await deductTokens(user.id, generationId, imagesGenerated);
           } catch (err) {
             console.error("Token deduction failed:", err);
           }
@@ -203,7 +203,7 @@ export async function POST(request: Request) {
         // Increment usage counter (atomic)
         await supabase.rpc("increment_generations_used", { p_user_id: user.id });
 
-        send({ type: "done", generationId, urls: imageUrls, byok, driveUrl: driveFolderUrl });
+        send({ type: "done", generationId, urls: imageUrls, byok, driveUrl: driveFolderUrl, cost });
         controller.close();
       } catch (err) {
         send({ type: "error", message: err instanceof Error ? err.message : "Невідома помилка" });
