@@ -10,7 +10,7 @@ type SSEEvent =
   | { type: "status"; message: string }
   | { type: "prompts_ready"; count: number }
   | { type: "image_start"; index: number; total: number; angle: string }
-  | { type: "image_done"; index: number; url: string }
+  | { type: "image_done"; index: number; url: string; error?: string }
   | { type: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string }
   | { type: "error"; message: string };
 
@@ -137,7 +137,7 @@ export async function POST(request: Request) {
             const errMsg = imgErr instanceof Error ? imgErr.message : String(imgErr);
             console.error(`Image ${i + 1} failed:`, errMsg);
             imageUrls.push("");
-            send({ type: "image_done", index: i + 1, url: "", error: errMsg } as never);
+            send({ type: "image_done", index: i + 1, url: "", error: errMsg });
           }
         }
 
