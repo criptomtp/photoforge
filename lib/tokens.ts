@@ -78,38 +78,9 @@ export async function resolveApiKey(userId: string): Promise<{
 }
 
 /**
- * Deducts tokens from user balance and records transaction.
- * Only called when byok = false.
- */
-export async function deductTokens(
-  userId: string,
-  generationId: string,
-  imagesGenerated: number
-): Promise<number> {
-  const cost = TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * imagesGenerated;
-
-  // Atomic update using RPC to avoid race conditions
-  const { data: newBalance, error } = await supabaseAdmin.rpc(
-    "deduct_tokens",
-    { p_user_id: userId, p_amount: cost }
-  );
-
-  if (error) throw new Error(`Token deduction failed: ${error.message}`);
-
-  await supabaseAdmin.from("token_transactions").insert({
-    user_id: userId,
-    amount: -cost,
-    kind: "generation",
-    description: `Генерація: ${imagesGenerated} фото`,
-    generation_id: generationId,
-    balance_after: newBalance,
-  });
-
-  return cost;
-}
-
-/**
- * Credits tokens to user (purchase, bonus, etc.)
+ * Credits tokens to user (purchase, bonus, etc.).
+ * Atomic: balance update + ledger row commit in a single DB transaction (RPC),
+ * so the balance and the audit trail can never diverge on a partial failure.
  */
 export async function creditTokens(
   userId: string,
@@ -117,18 +88,62 @@ export async function creditTokens(
   kind: "purchase" | "bonus" | "refund",
   description: string
 ): Promise<void> {
-  const { data: newBalance, error } = await supabaseAdmin.rpc(
-    "credit_tokens",
-    { p_user_id: userId, p_amount: amount }
-  );
+  const { error } = await supabaseAdmin.rpc("credit_tokens_tx", {
+    p_user_id: userId,
+    p_amount: amount,
+    p_kind: kind,
+    p_description: description,
+    p_generation_id: null,
+  });
 
   if (error) throw new Error(`Token credit failed: ${error.message}`);
+}
 
-  await supabaseAdmin.from("token_transactions").insert({
-    user_id: userId,
-    amount,
-    kind,
-    description,
-    balance_after: newBalance,
+/**
+ * Reserves (debits) the FULL cost of a run up-front, before any paid AI calls.
+ * The deduct_tokens_tx RPC locks the row, rejects an insufficient balance, and
+ * writes the ledger row atomically — so an underfunded request is rejected
+ * before it can burn any Gemini/Vertex spend, and concurrent runs are serialized.
+ * Only call when byok = false and freeQuota = false.
+ */
+export async function reserveTokens(
+  userId: string,
+  generationId: string,
+  angleCount: number
+): Promise<number> {
+  const cost = costForAngles(angleCount);
+
+  const { error } = await supabaseAdmin.rpc("deduct_tokens_tx", {
+    p_user_id: userId,
+    p_amount: cost,
+    p_kind: "generation",
+    p_description: `Генерація (резерв): ${angleCount} фото`,
+    p_generation_id: generationId,
   });
+
+  if (error) throw new Error(`Token reservation failed: ${error.message}`);
+
+  return cost;
+}
+
+/**
+ * Refunds part (or all) of a previously reserved run when some/all images fail.
+ */
+export async function refundTokens(
+  userId: string,
+  generationId: string,
+  amount: number,
+  reason: string
+): Promise<void> {
+  if (amount <= 0) return;
+
+  const { error } = await supabaseAdmin.rpc("credit_tokens_tx", {
+    p_user_id: userId,
+    p_amount: amount,
+    p_kind: "refund",
+    p_description: reason,
+    p_generation_id: generationId,
+  });
+
+  if (error) throw new Error(`Token refund failed: ${error.message}`);
 }

@@ -10,7 +10,7 @@ const REDIRECT_URI = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/google/callbac
 
 // ── OAuth URL ──────────────────────────────────────────────────────────────
 
-export function buildOAuthUrl(userId: string): string {
+export function buildOAuthUrl(state: string): string {
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
     redirect_uri: REDIRECT_URI,
@@ -18,7 +18,7 @@ export function buildOAuthUrl(userId: string): string {
     scope: SCOPES,
     access_type: "offline",
     prompt: "consent",
-    state: userId, // passed back in callback
+    state, // CSRF nonce, bound to the session via an HttpOnly cookie (verified in callback)
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }

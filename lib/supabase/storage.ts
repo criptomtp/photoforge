@@ -1,12 +1,23 @@
 import { supabaseAdmin as supabase } from "./admin";
 
 const BUCKET = "generations";
+// 7 days — long enough for the live flow, the client ZIP download, and the
+// Google Drive re-fetch, all of which happen within minutes of generation.
+const SIGNED_URL_TTL = 60 * 60 * 24 * 7;
 
 export async function ensureBucket() {
   const { data: buckets } = await supabase.storage.listBuckets();
-  const exists = buckets?.some((b) => b.name === BUCKET);
-  if (!exists) {
-    await supabase.storage.createBucket(BUCKET, { public: true });
+  const existing = buckets?.find((b) => b.name === BUCKET);
+  if (!existing) {
+    // Private: generated photos are reachable only via short-lived signed URLs.
+    await supabase.storage.createBucket(BUCKET, { public: false });
+  } else if (existing.public) {
+    // Migrate a previously-public bucket to private — closes the world-readable
+    // hole where any generated customer photo was fetchable by URL forever.
+    // Best-effort: signed URLs work regardless of visibility, so a failure here
+    // must NOT abort the generation.
+    const { error: visErr } = await supabase.storage.updateBucket(BUCKET, { public: false });
+    if (visErr) console.error("Failed to make bucket private:", visErr.message);
   }
 }
 
@@ -25,6 +36,13 @@ export async function uploadImage(
 
   if (error) throw new Error(`Storage upload failed: ${error.message}`);
 
-  const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+  const { data, error: signErr } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(path, SIGNED_URL_TTL);
+
+  if (signErr || !data?.signedUrl) {
+    throw new Error(`Signed URL failed: ${signErr?.message ?? "unknown"}`);
+  }
+
+  return data.signedUrl;
 }

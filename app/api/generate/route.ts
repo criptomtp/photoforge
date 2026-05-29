@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { generatePrompts, generateImage, type GeminiImagePart } from "@/lib/gemini";
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
-import { resolveApiKey, deductTokens } from "@/lib/tokens";
+import { resolveApiKey, reserveTokens, refundTokens } from "@/lib/tokens";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
-import { ANGLE_DEFS, resolveAngles } from "@/lib/angles";
+import { ANGLE_DEFS, resolveAngles, costForAngles, refundForRun, netCostForRun } from "@/lib/angles";
 
 export const maxDuration = 300;
 
@@ -58,6 +58,21 @@ export async function POST(request: Request) {
           return;
         }
 
+        // ── 2b. Rate limit: cap how fast one account can start generations ──
+        // Bounds abuse / runaway loops (financial overspend is already bounded
+        // by the atomic token reserve, this stops request-flooding the API).
+        const sinceIso = new Date(Date.now() - 60_000).toISOString();
+        const { count: recentCount } = await supabase
+          .from("generations")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .gte("created_at", sinceIso);
+        if ((recentCount ?? 0) >= 5) {
+          send({ type: "error", message: "Забагато генерацій підряд. Зачекайте хвилину і спробуйте знову." });
+          controller.close();
+          return;
+        }
+
         // ── 3. Resolve API key (BYOK or platform + token check) ────────────
         send({ type: "status", message: "Перевірка балансу..." });
 
@@ -102,6 +117,44 @@ export async function POST(request: Request) {
         }
 
         const generationId: string = generation.id;
+
+        // ── 5b. Reserve tokens / free slot UP-FRONT (before any paid AI call)
+        // Charging the full N-image cost before generating closes the
+        // "balance only checked for 1 image, deduction swallowed afterwards"
+        // hole that let an underfunded user generate unlimited free images.
+        if (!byok && !freeQuota) {
+          try {
+            await reserveTokens(user.id, generationId, N);
+          } catch {
+            await supabase
+              .from("generations")
+              .update({ status: "error", error_message: "insufficient_tokens" })
+              .eq("id", generationId);
+            send({
+              type: "error",
+              message: `Недостатньо токенів для ${N} ракурсів (потрібно ${costForAngles(N).toFixed(2)}). Поповніть баланс або додайте власний Gemini ключ.`,
+            });
+            controller.close();
+            return;
+          }
+        } else if (freeQuota) {
+          // Atomically consume one free-quota slot. A single conditional UPDATE
+          // (in the RPC) closes the race where N concurrent requests each pass a
+          // stale `generations_used < limit` check and all proceed for free.
+          const { data: consumed, error: consumeErr } = await supabase.rpc(
+            "try_consume_free_generation",
+            { p_user_id: user.id }
+          );
+          if (consumeErr || consumed !== true) {
+            await supabase
+              .from("generations")
+              .update({ status: "error", error_message: "free_quota_exhausted" })
+              .eq("id", generationId);
+            send({ type: "error", message: "Вичерпано безкоштовний ліміт генерацій. Поповніть баланс токенів." });
+            controller.close();
+            return;
+          }
+        }
 
         // ── 6. Generate 8 prompts via Gemini 2.5 Pro ───────────────────────
         const provider = byok ? "AI Studio (BYOK)" : apiKey === null ? "Vertex AI" : "AI Studio";
@@ -178,14 +231,22 @@ export async function POST(request: Request) {
           }
         }
 
-        // ── 9. Deduct tokens if using platform key (not free quota) ───────
+        // ── 9. Reconcile the reservation: refund tokens for failed images ──
         let cost = 0;
-        if (!byok && !freeQuota && imagesGenerated > 0) {
-          try {
-            cost = await deductTokens(user.id, generationId, imagesGenerated);
-          } catch (err) {
-            console.error("Token deduction failed:", err);
+        if (!byok && !freeQuota) {
+          const refund = refundForRun(N, imagesGenerated);
+          if (refund > 0) {
+            const failed = N - imagesGenerated;
+            await refundTokens(
+              user.id,
+              generationId,
+              refund,
+              imagesGenerated === 0
+                ? "Повернення: жодного фото не згенеровано"
+                : `Повернення за ${failed} невдалих фото`
+            ).catch((e) => console.error("Token refund failed:", e));
           }
+          cost = netCostForRun(N, imagesGenerated);
         }
 
         // ── 10. Finalise DB ────────────────────────────────────────────────
@@ -200,8 +261,10 @@ export async function POST(request: Request) {
           })
           .eq("id", generationId);
 
-        // Increment usage counter (atomic)
-        await supabase.rpc("increment_generations_used", { p_user_id: user.id });
+        // Usage counter: paid/BYOK runs counted here; free runs counted up-front.
+        if (!freeQuota) {
+          await supabase.rpc("increment_generations_used", { p_user_id: user.id });
+        }
 
         send({ type: "done", generationId, urls: imageUrls, byok, driveUrl: driveFolderUrl, cost });
         controller.close();

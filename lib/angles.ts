@@ -43,6 +43,20 @@ export function costForAngles(angleCount: number): number {
 
 export const FULL_RUN_COST = costForAngles(ANGLE_DEFS.length); // 0.10 + 0.50*8 = 4.10
 
+// Net tokens actually charged for a run: the prompt cost plus per-image cost for
+// SUCCESSFUL images only. The full cost is reserved up-front (costForAngles) and
+// failed images are refunded. Zero successful images ⇒ nothing is charged.
+export function netCostForRun(angleCount: number, imagesGenerated: number): number {
+  if (imagesGenerated <= 0) return 0;
+  return TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * Math.min(imagesGenerated, angleCount);
+}
+
+// How much of the up-front reserve to give back, given how many images succeeded.
+export function refundForRun(angleCount: number, imagesGenerated: number): number {
+  const refund = costForAngles(angleCount) - netCostForRun(angleCount, imagesGenerated);
+  return refund > 0 ? refund : 0;
+}
+
 export function angleById(id: string): AngleDef | undefined {
   return ANGLE_DEFS.find((a) => a.id === id);
 }

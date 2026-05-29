@@ -5,8 +5,14 @@ const ALGORITHM = "aes-256-gcm";
 function getKey(): Buffer {
   const key = process.env.ENCRYPTION_KEY;
   if (!key) throw new Error("ENCRYPTION_KEY env var is not set");
-  // Accept 64-char hex string → 32 bytes
-  return Buffer.from(key.padEnd(64, "0").slice(0, 64), "hex");
+  // Must be a full-entropy 32-byte key as 64 hex chars. Reject anything else
+  // instead of silently zero-padding a short/weak key (which would cripple AES).
+  if (!/^[0-9a-fA-F]{64}$/.test(key)) {
+    throw new Error(
+      "ENCRYPTION_KEY must be a 64-character hex string (32 bytes). Generate one with: openssl rand -hex 32"
+    );
+  }
+  return Buffer.from(key, "hex");
 }
 
 export function encrypt(plaintext: string): string {
