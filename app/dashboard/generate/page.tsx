@@ -34,6 +34,7 @@ export default function GeneratePage() {
   const [state, setState] = useState<GenerationState>({ phase: "idle" });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [regenIdx, setRegenIdx] = useState<number | null>(null);
 
   function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []).slice(0, 9);
@@ -208,6 +209,36 @@ export default function GeneratePage() {
     a.href = URL.createObjectURL(blob);
     a.download = `${brand}_${productType}_photos.zip`;
     a.click();
+  }
+
+  async function handleRegenerate(i: number) {
+    if (state.phase !== "done") return;
+    const prompt = state.prompts[i];
+    if (!prompt || images.length === 0) return;
+    setRegenIdx(i);
+    const genId = state.generationId;
+    try {
+      const fd = new FormData();
+      fd.append("generationId", genId);
+      fd.append("index", String(i));
+      fd.append("prompt", prompt);
+      images.forEach((img) => fd.append("images", img));
+      const res = await fetch("/api/generate/regenerate", { method: "POST", body: fd });
+      const data = await res.json().catch(() => ({} as { url?: string; error?: string }));
+      setState((s) => {
+        if (s.phase !== "done") return s;
+        if (res.ok && data.url) {
+          const urls = [...s.urls];
+          urls[i] = data.url;
+          return { ...s, urls, imageErrors: s.imageErrors.filter((e) => !e.startsWith(`Фото ${i + 1}:`)) };
+        }
+        return { ...s, imageErrors: [...s.imageErrors, `Фото ${i + 1}: ${data.error ?? "не вдалося"}`] };
+      });
+    } catch {
+      setState((s) => (s.phase === "done" ? { ...s, imageErrors: [...s.imageErrors, `Фото ${i + 1}: помилка мережі`] } : s));
+    } finally {
+      setRegenIdx(null);
+    }
   }
 
   const isRunning = state.phase === "running";
@@ -544,6 +575,14 @@ export default function GeneratePage() {
                       )}
                     </div>
                     <p className="text-[#6B6560] text-xs text-center truncate">{state.angleLabels[i]}</p>
+                    <button
+                      type="button"
+                      onClick={() => handleRegenerate(i)}
+                      disabled={regenIdx !== null || !state.prompts[i] || images.length === 0}
+                      className="w-full text-[10px] text-[#6B6560] hover:text-[#E8943A] border border-[#2A2723] hover:border-[#E8943A] rounded py-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {regenIdx === i ? "Генерую..." : "↻ Перегенерувати"}
+                    </button>
                     {state.prompts[i] && (
                       <details className="text-[10px] text-[#6B6560]">
                         <summary className="cursor-pointer hover:text-[#E8943A] text-center">промпт</summary>
