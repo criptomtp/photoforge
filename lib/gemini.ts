@@ -165,16 +165,34 @@ export async function generatePrompts(
   }
 
   const data = await res.json();
-  const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  // The text isn't always parts[0] — concatenate every text part.
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  const text: string = parts.map((p: { text?: string }) => p.text ?? "").join("").trim();
 
-  // Split on PROMPT: delimiter, filter empty entries
-  const prompts = text
+  // Primary: split on the PROMPT: delimiter the system prompt asks for.
+  let prompts = text
     .split(/PROMPT:/i)
     .map((s: string) => s.trim())
     .filter((s: string) => s.length > 50);
 
+  // Fallback: the model ignored the PROMPT: markers but still returned usable
+  // text — split on blank lines, or use the whole response for a single-angle run.
+  if (prompts.length < N && text.length > 50) {
+    const blocks = text.split(/\n\s*\n/).map((s: string) => s.trim()).filter((s: string) => s.length > 50);
+    prompts = blocks.length >= N ? blocks : [text];
+  }
+
   if (prompts.length < N) {
-    throw new Error(`Expected ${N} prompts, got ${prompts.length}`);
+    const reason =
+      data.promptFeedback?.blockReason ??
+      data.candidates?.[0]?.finishReason ??
+      "невідома причина";
+    throw new Error(
+      `Модель повернула ${prompts.length} промптів замість ${N} (причина: ${reason}). ` +
+      (text
+        ? `Відповідь моделі: «${text.slice(0, 150)}». Спробуйте інший опис товару.`
+        : "Порожня відповідь — імовірно спрацював фільтр безпеки Google. Спробуйте інший опис/референс.")
+    );
   }
 
   return prompts.slice(0, N);
