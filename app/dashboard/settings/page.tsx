@@ -99,20 +99,25 @@ function SettingsContent() {
     setSaving(true);
     setMsg(null);
 
-    const res = await fetch("/api/user/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gemini_api_key: geminiKey.trim() || null }),
-    });
-    const data = await res.json();
-    setSaving(false);
+    try {
+      const res = await fetch("/api/user/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gemini_api_key: geminiKey.trim() || null }),
+      });
+      const data = await res.json().catch(() => ({} as { error?: string }));
 
-    if (res.ok) {
-      setMsg({ type: "ok", text: geminiKey.trim() ? "Gemini API ключ збережено" : "Ключ видалено" });
-      setGeminiKey("");
-      await loadData();
-    } else {
-      setMsg({ type: "err", text: data.error ?? "Помилка" });
+      if (res.ok) {
+        setMsg({ type: "ok", text: geminiKey.trim() ? "Gemini API ключ збережено" : "Ключ видалено" });
+        setGeminiKey("");
+        await loadData();
+      } else {
+        setMsg({ type: "err", text: data.error ?? `Помилка (${res.status})` });
+      }
+    } catch {
+      setMsg({ type: "err", text: "Помилка мережі — спробуйте ще раз" });
+    } finally {
+      setSaving(false);
     }
   }
 
