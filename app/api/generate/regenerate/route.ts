@@ -80,15 +80,15 @@ export async function POST(request: Request) {
   // Charge paid users for the one image (only on success). BYOK / free-quota /
   // Vertex pay nothing here.
   if (!byok && !freeQuota) {
-    await supabaseAdmin
-      .rpc("deduct_tokens_tx", {
+    try {
+      await supabaseAdmin.rpc("deduct_tokens_tx", {
         p_user_id: user.id,
         p_amount: TOKEN_COSTS.image_gen,
         p_kind: "generation",
         p_description: "Перегенерація 1 фото",
         p_generation_id: generationId,
-      })
-      .catch(() => {});
+      });
+    } catch { /* best effort — image already delivered */ }
   }
 
   return NextResponse.json({ url });
