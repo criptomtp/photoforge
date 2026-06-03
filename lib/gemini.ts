@@ -2,6 +2,11 @@ import type { AngleDef } from "./angles";
 
 const STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
+// Gemini model names drift over time — keep them overridable via env so a rename
+// can be fixed by changing a setting instead of editing/redeploying code.
+const STUDIO_PROMPT_MODEL = process.env.STUDIO_PROMPT_MODEL ?? "gemini-2.5-flash";
+const STUDIO_IMAGE_MODEL = process.env.STUDIO_IMAGE_MODEL ?? "gemini-2.5-flash-image-preview";
+
 const UA_NUM = ["", "ОДИН", "ДВА", "ТРИ", "ЧОТИРИ", "П'ЯТЬ", "ШІСТЬ", "СІМ", "ВІСІМ"] as const;
 const numWord = (n: number) => UA_NUM[n] ?? String(n);
 
@@ -150,7 +155,7 @@ export async function generatePrompts(
   // Use Vertex model when on platform, AI Studio model for BYOK
   const model = apiKey === null
     ? (await import("./vertex-auth")).VERTEX_PROMPT_MODEL
-    : "gemini-2.5-flash";
+    : STUDIO_PROMPT_MODEL;
 
   const res = await callGenerateContent(model, body, apiKey);
 
@@ -201,7 +206,7 @@ export async function generateImage(
   // AI Studio uses a special preview model; Vertex AI uses its own image model
   const model = apiKey === null
     ? (await import("./vertex-auth")).VERTEX_IMAGE_MODEL
-    : "gemini-2.5-flash-preview-05-20";
+    : STUDIO_IMAGE_MODEL;
 
   // AI Studio image gen requires x-goog-api-key header (not query param)
   let res: Response;
