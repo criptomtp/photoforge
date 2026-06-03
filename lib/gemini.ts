@@ -2,10 +2,11 @@ import type { AngleDef } from "./angles";
 
 const STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-// Gemini model names drift over time — keep them overridable via env so a rename
-// can be fixed by changing a setting instead of editing/redeploying code.
-const STUDIO_PROMPT_MODEL = process.env.STUDIO_PROMPT_MODEL ?? "gemini-2.5-flash";
-const STUDIO_IMAGE_MODEL = process.env.STUDIO_IMAGE_MODEL ?? "gemini-2.5-flash-image-preview";
+// Models proven in the working Make.com blueprint: gemini-2.5-pro for prompts,
+// gemini-2.5-flash-image for images. Overridable via env so a future Google
+// rename is a settings change, not a code edit.
+const STUDIO_PROMPT_MODEL = process.env.STUDIO_PROMPT_MODEL ?? "gemini-2.5-pro";
+const STUDIO_IMAGE_MODEL = process.env.STUDIO_IMAGE_MODEL ?? "gemini-2.5-flash-image";
 
 const UA_NUM = ["", "ОДИН", "ДВА", "ТРИ", "ЧОТИРИ", "П'ЯТЬ", "ШІСТЬ", "СІМ", "ВІСІМ"] as const;
 const numWord = (n: number) => UA_NUM[n] ?? String(n);
@@ -252,15 +253,21 @@ export async function generateImage(
   const data = await res.json();
   const parts = data.candidates?.[0]?.content?.parts ?? [];
 
-  // Find the image part
-  const imgPart = parts.find(
-    (p: { inline_data?: { mime_type: string; data: string } }) =>
-      p.inline_data?.mime_type?.startsWith("image/")
-  );
+  // The Gemini REST response uses camelCase (inlineData/mimeType) — the Make
+  // blueprint reads candidates[].content.parts[].inlineData.data. Accept both.
+  const imgData = parts
+    .map((p: { inline_data?: { mime_type?: string; data?: string }; inlineData?: { mimeType?: string; data?: string } }) => p.inline_data ?? p.inlineData)
+    .find((d: { mime_type?: string; mimeType?: string; data?: string } | undefined) =>
+      !!d?.data && (d.mime_type ?? d.mimeType ?? "image/").startsWith("image/")
+    );
 
-  if (!imgPart?.inline_data?.data) {
-    throw new Error("No image in Gemini response");
+  if (!imgData?.data) {
+    const reason =
+      data.promptFeedback?.blockReason ??
+      data.candidates?.[0]?.finishReason ??
+      "немає зображення у відповіді";
+    throw new Error(`Gemini не повернув зображення (причина: ${reason}).`);
   }
 
-  return imgPart.inline_data.data; // base64 string
+  return imgData.data; // base64 string
 }
