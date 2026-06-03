@@ -172,24 +172,42 @@ export async function POST(request: Request) {
           const angleName = angles[i]?.label ?? `Ракурс ${i + 1}`;
           send({ type: "image_start", index: i + 1, total: N, angle: angleName });
 
-          try {
-            const base64Image = await generateImage(apiKey, prompts[i], referenceParts);
-            const path = `${user.id}/${generationId}/${i + 1}.jpg`;
-            const url  = await uploadImage(base64Image, path);
+          // Gemini image generation is flaky (safety re-rolls + transient errors),
+          // so retry each image up to 3× before giving up — mirrors the Make
+          // blueprint's "if it errors, regenerate" rule and lifts the hit rate.
+          let base64Image: string | null = null;
+          let lastErr = "";
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              base64Image = await generateImage(apiKey, prompts[i], referenceParts);
+              break;
+            } catch (e) {
+              lastErr = e instanceof Error ? e.message : String(e);
+              console.error(`Image ${i + 1} attempt ${attempt}/3 failed:`, lastErr);
+              if (attempt < 3) await new Promise((r) => setTimeout(r, 1200 * attempt));
+            }
+          }
 
-            imageUrls.push(url);
-            imagesGenerated++;
-            send({ type: "image_done", index: i + 1, url });
-
-            await supabase
-              .from("generations")
-              .update({ images_generated: imagesGenerated })
-              .eq("id", generationId);
-          } catch (imgErr) {
-            const errMsg = imgErr instanceof Error ? imgErr.message : String(imgErr);
-            console.error(`Image ${i + 1} failed:`, errMsg);
+          if (base64Image) {
+            try {
+              const path = `${user.id}/${generationId}/${i + 1}.jpg`;
+              const url  = await uploadImage(base64Image, path);
+              imageUrls.push(url);
+              imagesGenerated++;
+              send({ type: "image_done", index: i + 1, url });
+              await supabase
+                .from("generations")
+                .update({ images_generated: imagesGenerated })
+                .eq("id", generationId);
+            } catch (upErr) {
+              const errMsg = upErr instanceof Error ? upErr.message : String(upErr);
+              console.error(`Image ${i + 1} upload failed:`, errMsg);
+              imageUrls.push("");
+              send({ type: "image_done", index: i + 1, url: "", error: errMsg });
+            }
+          } else {
             imageUrls.push("");
-            send({ type: "image_done", index: i + 1, url: "", error: errMsg });
+            send({ type: "image_done", index: i + 1, url: "", error: lastErr });
           }
         }
 
