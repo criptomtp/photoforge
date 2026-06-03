@@ -210,6 +210,7 @@ export async function generateImage(
   const body = {
     contents: [
       {
+        role: "user", // Vertex AI requires an explicit role on every content
         parts: [
           { text: prompt },
           { text: IMAGE_INSTRUCTIONS },
