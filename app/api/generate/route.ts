@@ -12,7 +12,7 @@ type SSEEvent =
   | { type: "prompts_ready"; count: number }
   | { type: "image_start"; index: number; total: number; angle: string }
   | { type: "image_done"; index: number; url: string; error?: string }
-  | { type: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string; cost: number }
+  | { type: "done"; generationId: string; urls: string[]; prompts: string[]; byok: boolean; driveUrl?: string; cost: number }
   | { type: "error"; message: string };
 
 export async function POST(request: Request) {
@@ -274,6 +274,7 @@ export async function POST(request: Request) {
             status: "done",
             images_generated: imagesGenerated,
             image_urls: imageUrls,
+            prompts,
             ...(driveFolderId ? { google_drive_folder_id: driveFolderId } : {}),
             ...(driveFolderUrl ? { google_drive_folder_url: driveFolderUrl } : {}),
           })
@@ -284,7 +285,7 @@ export async function POST(request: Request) {
           await supabase.rpc("increment_generations_used", { p_user_id: user.id });
         }
 
-        send({ type: "done", generationId, urls: imageUrls, byok, driveUrl: driveFolderUrl, cost });
+        send({ type: "done", generationId, urls: imageUrls, prompts, byok, driveUrl: driveFolderUrl, cost });
         controller.close();
       } catch (err) {
         send({ type: "error", message: err instanceof Error ? err.message : "Невідома помилка" });

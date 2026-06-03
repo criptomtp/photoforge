@@ -10,7 +10,7 @@ const GENDERS = ["Чоловіча", "Жіноча", "Хлопчик", "Дівч
 type GenerationState =
   | { phase: "idle" }
   | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[]; imageErrors: string[]; angleLabels: string[] }
-  | { phase: "done"; generationId: string; urls: string[]; byok: boolean; driveUrl?: string; imageErrors: string[]; angleLabels: string[]; cost: number }
+  | { phase: "done"; generationId: string; urls: string[]; prompts: string[]; byok: boolean; driveUrl?: string; imageErrors: string[]; angleLabels: string[]; cost: number }
   | { phase: "error"; message: string };
 
 export default function GeneratePage() {
@@ -163,6 +163,7 @@ export default function GeneratePage() {
                 phase: "done",
                 generationId: event.generationId,
                 urls: event.urls,
+                prompts: event.prompts ?? [],
                 byok: event.byok,
                 driveUrl: event.driveUrl,
                 imageErrors: s.phase === "running" ? s.imageErrors : [],
@@ -543,6 +544,14 @@ export default function GeneratePage() {
                       )}
                     </div>
                     <p className="text-[#6B6560] text-xs text-center truncate">{state.angleLabels[i]}</p>
+                    {state.prompts[i] && (
+                      <details className="text-[10px] text-[#6B6560]">
+                        <summary className="cursor-pointer hover:text-[#E8943A] text-center">промпт</summary>
+                        <p className="mt-1 text-[#8B857F] leading-snug max-h-32 overflow-auto bg-[#0C0B0A] border border-[#2A2723] rounded p-1.5 whitespace-pre-wrap">
+                          {state.prompts[i]}
+                        </p>
+                      </details>
+                    )}
                   </div>
                 ))}
               </div>
