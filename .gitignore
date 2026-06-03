@@ -50,6 +50,8 @@ credentials.json
 *-key.json
 service-account*.json
 make-blueprint.json
+*vertex*.json
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
 
 # local agent / CLI tooling (not part of the app)
 .claude/
