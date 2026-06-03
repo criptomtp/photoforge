@@ -39,3 +39,21 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ── secrets safety net — credential files must NEVER be committed ──
+*.key
+*.p12
+*.pfx
+secrets.txt
+passwords.txt
+credentials.json
+*-key.json
+service-account*.json
+
+# local agent / CLI tooling (not part of the app)
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+/supabase/.temp/
+/supabase/APPLY_IN_SUPABASE.sql
