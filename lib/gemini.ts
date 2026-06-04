@@ -29,10 +29,15 @@ async function callGenerateContent(
     });
   }
 
-  // Vertex AI path
+  // Vertex AI path. Gemini 3 image models (Nano Banana 2 / Pro) are GLOBAL-only
+  // and use the non-prefixed host aiplatform.googleapis.com; regional models
+  // (e.g. gemini-2.5-flash-image in us-central1) use {location}-aiplatform...
   const { getVertexToken, VERTEX_PROJECT, VERTEX_LOCATION } = await import("./vertex-auth");
   const token = await getVertexToken();
-  const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
+  const host = VERTEX_LOCATION === "global"
+    ? "https://aiplatform.googleapis.com"
+    : `https://${VERTEX_LOCATION}-aiplatform.googleapis.com`;
+  const url = `${host}/v1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
   return fetch(url, {
     method: "POST",
     headers: {
