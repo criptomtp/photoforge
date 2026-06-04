@@ -43,6 +43,12 @@ export async function POST(request: Request) {
           return;
         }
 
+        if (!productType.trim()) {
+          send({ type: "error", message: "Вкажіть, який товар головний (напр. сорочка, джинси, кросівки)" });
+          controller.close();
+          return;
+        }
+
         const angles = angleIds.length > 0 ? resolveAngles(angleIds, cat.angles) : [...cat.angles];
         if (angles.length === 0) {
           send({ type: "error", message: "Оберіть хоча б один ракурс" });
@@ -182,7 +188,7 @@ export async function POST(request: Request) {
           let lastErr = "";
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-              base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location, imageInstructionsFor(cat));
+              base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location, imageInstructionsFor(cat, productType));
               break;
             } catch (e) {
               lastErr = e instanceof Error ? e.message : String(e);

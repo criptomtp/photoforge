@@ -29,12 +29,13 @@ export async function POST(request: Request) {
   // Ownership check (the row must belong to the caller).
   const { data: gen } = await supabase
     .from("generations")
-    .select("id, image_urls, category")
+    .select("id, image_urls, category, product_type")
     .eq("id", generationId)
     .eq("user_id", user.id)
     .single();
   if (!gen) return NextResponse.json({ error: "Генерацію не знайдено" }, { status: 404 });
   const cat = category(gen.category as string | undefined);
+  const product = (gen.product_type as string | undefined) ?? "";
 
   let apiKey: string | null;
   let byok: boolean;
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
   let lastErr = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      base64 = await generateImage(apiKey, prompt, referenceParts, undefined, undefined, imageInstructionsFor(cat));
+      base64 = await generateImage(apiKey, prompt, referenceParts, undefined, undefined, imageInstructionsFor(cat, product));
       break;
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);

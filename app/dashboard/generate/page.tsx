@@ -264,6 +264,7 @@ export default function GeneratePage() {
   const canSubmit =
     selectedAngles.length > 0 &&
     images.length > 0 &&
+    productType.trim().length > 0 &&
     (!cat.needsGender || gender.trim().length > 0);
 
   return (
@@ -320,17 +321,20 @@ export default function GeneratePage() {
               </div>
             )}
             <div>
-              <label className="block text-sm text-[#6B6560] mb-2">Вид товару <span className="text-[#6B6560]">(необов&apos;язково)</span></label>
+              <label className="block text-sm text-[#6B6560] mb-2">Який товар головний? <span className="text-[#E8943A]">*</span></label>
               <input
                 type="text"
                 value={productType}
                 onChange={(e) => setProductType(e.target.value)}
-                placeholder="AI визначить сам, або вкажи: пуховик, кросівки…"
+                placeholder="напр. сорочка, джинси, кросівки, каблучка"
                 className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors"
                 disabled={isRunning}
               />
             </div>
           </div>
+          <p className="text-xs text-[#6B6560] leading-snug">
+            🛈 <span className="text-[#8B857F]">Якщо на фото кілька речей</span> (напр. сорочка + джинси) — вкажи, яку саме рекламуєш. AI зробить її головною, а решту образу підбере під неї.
+          </p>
           <div>
             <label className="block text-sm text-[#6B6560] mb-2">Сезон <span className="text-[#6B6560]">(необов&apos;язково)</span></label>
             <select
