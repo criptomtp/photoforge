@@ -2,7 +2,8 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ANGLE_DEFS, PRESETS, costForAngles, QUALITY_TIERS, type QualityId } from "@/lib/angles";
+import { costForAngles, QUALITY_TIERS, type QualityId } from "@/lib/angles";
+import { CATEGORY_LIST, category, type CategoryId } from "@/lib/categories";
 
 const SEASONS = ["Зима", "Осінь", "Літо", "Демісезон"];
 const GENDERS = ["Чоловіча", "Жіноча", "Хлопчик", "Дівчинка", "Унісекс"];
@@ -14,6 +15,10 @@ type GenerationState =
   | { phase: "error"; message: string };
 
 export default function GeneratePage() {
+  // ── Category (drives angle set, gender requirement, on-model vs product) ──
+  const [categoryId, setCategoryId] = useState<CategoryId>("clothing");
+  const cat = useMemo(() => category(categoryId), [categoryId]);
+
   const [productType, setProductType] = useState("");
   const [season, setSeason] = useState("");
   const [gender, setGender] = useState("");
@@ -23,11 +28,11 @@ export default function GeneratePage() {
   // ── Angle selection ─────────────────────────────────────────────────────
   const [presetId, setPresetId] = useState<string>("full");
   const [quality, setQuality] = useState<QualityId>("standard");
-  const [customAngles, setCustomAngles] = useState<string[]>(PRESETS[0].angles.slice());
+  const [customAngles, setCustomAngles] = useState<string[]>(cat.presets[0].angles.slice());
   const isCustom = presetId === "custom";
   const selectedAngles = isCustom
     ? customAngles
-    : (PRESETS.find((p) => p.id === presetId)?.angles.slice() ?? []);
+    : (cat.presets.find((p) => p.id === presetId)?.angles.slice() ?? []);
 
   const cost = useMemo(
     () => costForAngles(selectedAngles.length, QUALITY_TIERS[quality].tokenMultiplier),
@@ -38,6 +43,15 @@ export default function GeneratePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [regenIdx, setRegenIdx] = useState<number | null>(null);
+
+  // Switching category swaps the entire angle set, so reset the picker to the
+  // new category's full preset (old angle IDs don't exist in the new set).
+  function selectCategory(id: CategoryId) {
+    if (state.phase === "running") return;
+    setCategoryId(id);
+    setPresetId("full");
+    setCustomAngles(category(id).presets[0].angles.slice());
+  }
 
   function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []).slice(0, 9);
@@ -55,7 +69,7 @@ export default function GeneratePage() {
   function selectPreset(id: string) {
     setPresetId(id);
     if (id !== "custom") {
-      const preset = PRESETS.find((p) => p.id === id);
+      const preset = cat.presets.find((p) => p.id === id);
       if (preset) setCustomAngles(preset.angles.slice());
     }
   }
@@ -72,8 +86,8 @@ export default function GeneratePage() {
 
     if (selectedAngles.length === 0) return;
 
-    // Resolve labels in canonical order to mirror the API
-    const angleLabels = ANGLE_DEFS.filter((a) => selectedAngles.includes(a.id)).map((a) => a.label);
+    // Resolve labels in the category's canonical order to mirror the API
+    const angleLabels = cat.angles.filter((a) => selectedAngles.includes(a.id)).map((a) => a.label);
     const N = angleLabels.length;
 
     abortRef.current = new AbortController();
@@ -88,12 +102,13 @@ export default function GeneratePage() {
     });
 
     const formData = new FormData();
+    formData.append("category", categoryId);
     formData.append("productType", productType);
     formData.append("season", season);
     formData.append("gender", gender);
     images.forEach((img) => formData.append("images", img));
-    // Send angles in canonical order
-    ANGLE_DEFS.forEach((a) => {
+    // Send angles in the category's canonical order
+    cat.angles.forEach((a) => {
       if (selectedAngles.includes(a.id)) formData.append("angles", a.id);
     });
     formData.append("quality", quality);
@@ -210,7 +225,7 @@ export default function GeneratePage() {
     const blob = await zip.generateAsync({ type: "blob" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${productType || "photoforge"}_photos.zip`;
+    a.download = `${productType || cat.label}_photos.zip`;
     a.click();
   }
 
@@ -246,31 +261,64 @@ export default function GeneratePage() {
 
   const isRunning = state.phase === "running";
   const isDone = state.phase === "done";
-  const canSubmit = selectedAngles.length > 0 && images.length > 0 && gender.trim();
+  const canSubmit =
+    selectedAngles.length > 0 &&
+    images.length > 0 &&
+    (!cat.needsGender || gender.trim().length > 0);
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="font-heading text-3xl font-bold text-[#F5F0EB]">Генерація фото</h1>
-        <p className="text-[#6B6560] mt-1">Оберіть ракурси, заповніть форму та завантажте референс</p>
+        <p className="text-[#6B6560] mt-1">Оберіть категорію та ракурси, завантажте референс</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* ── Form ──────────────────────────────────────────────────────── */}
         <form onSubmit={handleSubmit} className="space-y-5">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-[#6B6560] mb-2">Стать <span className="text-[#E8943A]">*</span></label>
-              <select
-                value={gender}
-                onChange={(e) => setGender(e.target.value)}
-                className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] focus:outline-none focus:border-[#E8943A] transition-colors"
-                disabled={isRunning}
-              >
-                <option value="">Оберіть стать</option>
-                {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
-              </select>
+          {/* ── Category selector ──────────────────────────────────────── */}
+          <div>
+            <label className="block text-sm text-[#6B6560] mb-2">Категорія товару</label>
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+              {CATEGORY_LIST.map((c) => (
+                <button
+                  type="button"
+                  key={c.id}
+                  onClick={() => selectCategory(c.id)}
+                  disabled={isRunning}
+                  className={`px-2 py-2.5 rounded-lg text-xs font-medium transition-colors border flex flex-col items-center gap-1 ${
+                    categoryId === c.id
+                      ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]"
+                      : "bg-[#161412] border-[#2A2723] text-[#6B6560] hover:border-[#E8943A] hover:text-[#F5F0EB]"
+                  }`}
+                >
+                  <span className="text-lg leading-none">{c.emoji}</span>
+                  <span className="text-center leading-tight">{c.label}</span>
+                </button>
+              ))}
             </div>
+          </div>
+
+          <div className={cat.onModel ? "grid grid-cols-2 gap-4" : ""}>
+            {cat.onModel && (
+              <div>
+                <label className="block text-sm text-[#6B6560] mb-2">
+                  Стать{" "}
+                  {cat.needsGender
+                    ? <span className="text-[#E8943A]">*</span>
+                    : <span className="text-[#6B6560]">(необов&apos;язково)</span>}
+                </label>
+                <select
+                  value={gender}
+                  onChange={(e) => setGender(e.target.value)}
+                  className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] focus:outline-none focus:border-[#E8943A] transition-colors"
+                  disabled={isRunning}
+                >
+                  <option value="">{cat.needsGender ? "Оберіть стать" : "AI обере сам"}</option>
+                  {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+            )}
             <div>
               <label className="block text-sm text-[#6B6560] mb-2">Вид товару <span className="text-[#6B6560]">(необов&apos;язково)</span></label>
               <input
@@ -305,7 +353,7 @@ export default function GeneratePage() {
               Ракурси <span className="text-[#F5F0EB]">({selectedAngles.length})</span>
             </label>
             <div className="flex flex-wrap gap-2 mb-3">
-              {PRESETS.map((preset) => (
+              {cat.presets.map((preset) => (
                 <button
                   type="button"
                   key={preset.id}
@@ -336,7 +384,7 @@ export default function GeneratePage() {
 
             {isCustom && (
               <div className="grid grid-cols-2 gap-2 bg-[#161412] border border-[#2A2723] rounded-lg p-3">
-                {ANGLE_DEFS.map((a) => {
+                {cat.angles.map((a) => {
                   const checked = customAngles.includes(a.id);
                   return (
                     <label
@@ -344,6 +392,7 @@ export default function GeneratePage() {
                       className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
                         checked ? "bg-[#E8943A]/10" : "hover:bg-[#1E1C19]"
                       }`}
+                      title={a.desc}
                     >
                       <input
                         type="checkbox"
@@ -458,9 +507,7 @@ export default function GeneratePage() {
               disabled={isRunning || !canSubmit}
               className="flex-1 bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-4 rounded-xl transition-colors"
             >
-              {isRunning
-                ? "Генерація..."
-                : `Згенерувати ${selectedAngles.length} ${selectedAngles.length === 1 ? "фото" : "фото"}`}
+              {isRunning ? "Генерація..." : `Згенерувати ${selectedAngles.length} фото`}
             </button>
             {isRunning && (
               <button

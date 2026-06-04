@@ -83,9 +83,12 @@ export function angleById(id: string): AngleDef | undefined {
   return ANGLE_DEFS.find((a) => a.id === id);
 }
 
-// Resolve a list of IDs to AngleDefs in the order of the canonical list,
-// dropping unknown IDs.
-export function resolveAngles(ids: readonly string[]): AngleDef[] {
+// Resolve a list of IDs to AngleDefs in the order of the given pool (the
+// category's angle set, defaulting to the canonical list), dropping unknown IDs.
+export function resolveAngles(
+  ids: readonly string[],
+  pool: readonly AngleDef[] = ANGLE_DEFS
+): AngleDef[] {
   const set = new Set(ids);
-  return ANGLE_DEFS.filter((a) => set.has(a.id));
+  return pool.filter((a) => set.has(a.id));
 }

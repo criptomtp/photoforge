@@ -3,7 +3,8 @@ import { generatePrompts, generateImage, type GeminiImagePart } from "@/lib/gemi
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveApiKey, reserveTokens, refundTokens } from "@/lib/tokens";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
-import { ANGLE_DEFS, resolveAngles, costForAngles, refundForRun, netCostForRun, qualityTier } from "@/lib/angles";
+import { resolveAngles, costForAngles, refundForRun, netCostForRun, qualityTier } from "@/lib/angles";
+import { category } from "@/lib/categories";
 
 export const maxDuration = 300;
 
@@ -27,10 +28,11 @@ export async function POST(request: Request) {
       try {
         // ── 1. Parse FormData ───────────────────────────────────────────────
         const formData = await request.formData();
+        const cat         = category(formData.get("category")?.toString());
         const brand       = "";
         const productType = (formData.get("productType") as string) ?? "";
         const season      = (formData.get("season") as string) ?? "";
-        const gender      = formData.get("gender") as string;
+        const gender      = (formData.get("gender") as string) ?? "";
         const imageFiles  = formData.getAll("images") as File[];
         const angleIds    = formData.getAll("angles") as string[];
         const tier        = qualityTier(formData.get("quality")?.toString());
@@ -41,7 +43,7 @@ export async function POST(request: Request) {
           return;
         }
 
-        const angles = angleIds.length > 0 ? resolveAngles(angleIds) : [...ANGLE_DEFS];
+        const angles = angleIds.length > 0 ? resolveAngles(angleIds, cat.angles) : [...cat.angles];
         if (angles.length === 0) {
           send({ type: "error", message: "Оберіть хоча б один ракурс" });
           controller.close();
@@ -107,7 +109,7 @@ export async function POST(request: Request) {
         // ── 5. Create generation record ────────────────────────────────────
         const { data: generation, error: dbError } = await supabase
           .from("generations")
-          .insert({ user_id: user.id, brand, product_type: productType, season, gender, status: "processing" })
+          .insert({ user_id: user.id, brand, product_type: productType, season, gender, category: cat.id, status: "processing" })
           .select()
           .single();
 
@@ -161,7 +163,7 @@ export async function POST(request: Request) {
         const provider = byok ? "AI Studio (BYOK)" : apiKey === null ? "Vertex AI" : "AI Studio";
         send({ type: "status", message: `${provider}: генерую промпти...` });
 
-        const prompts = await generatePrompts(apiKey, brand, productType, season, gender, referenceParts, angles);
+        const prompts = await generatePrompts(apiKey, cat, productType, season, gender, referenceParts, angles);
         send({ type: "prompts_ready", count: prompts.length });
 
         // ── 7. Generate images via Gemini 2.5 Flash ────────────────────────
@@ -220,7 +222,7 @@ export async function POST(request: Request) {
         if (driveToken && imagesGenerated > 0) {
           try {
             send({ type: "status", message: "Завантажую на Google Drive..." });
-            const folderName = productType || "PhotoForge товар";
+            const folderName = productType || `PhotoForge — ${cat.label}`;
             const { id: folderId, webViewLink } = await createDriveFolder(driveToken, folderName);
             driveFolderId = folderId;
             driveFolderUrl = webViewLink;
