@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { costForAngles, QUALITY_TIERS, type QualityId } from "@/lib/angles";
+import { costForAngles, QUALITY_TIERS, AVAILABLE_TIERS, type QualityId } from "@/lib/angles";
 import { CATEGORY_LIST, category, type CategoryId } from "@/lib/categories";
 
 const SEASONS = ["Зима", "Осінь", "Літо", "Демісезон"];
@@ -495,34 +495,32 @@ export default function GeneratePage() {
             </div>
           )}
 
-          {/* Quality selector */}
-          <div>
-            <label className="block text-sm text-[#6B6560] mb-2">Якість фото</label>
-            <div className="flex gap-2">
-              {Object.values(QUALITY_TIERS).map((t) => (
-                <button
-                  type="button"
-                  key={t.id}
-                  onClick={() => setQuality(t.id)}
-                  disabled={isRunning}
-                  className={`flex-1 px-3 py-2 rounded-lg text-xs transition-colors border text-left ${
-                    quality === t.id
-                      ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]"
-                      : "bg-[#161412] border-[#2A2723] text-[#6B6560] hover:border-[#E8943A] hover:text-[#F5F0EB]"
-                  }`}
-                >
-                  <div className="font-semibold">{t.label}</div>
-                  <div className="text-[10px] opacity-80 leading-tight mt-0.5">{t.desc}</div>
-                  <div className="text-[10px] mt-1">×{t.tokenMultiplier} ток/фото</div>
-                </button>
-              ))}
+          {/* Quality selector — only shown when more than one tier is available.
+              Plus/Pro are disabled for now (tiny Vertex quota → 429s). */}
+          {AVAILABLE_TIERS.length > 1 && (
+            <div>
+              <label className="block text-sm text-[#6B6560] mb-2">Якість фото</label>
+              <div className="flex gap-2">
+                {AVAILABLE_TIERS.map((t) => (
+                  <button
+                    type="button"
+                    key={t.id}
+                    onClick={() => setQuality(t.id)}
+                    disabled={isRunning}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs transition-colors border text-left ${
+                      quality === t.id
+                        ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]"
+                        : "bg-[#161412] border-[#2A2723] text-[#6B6560] hover:border-[#E8943A] hover:text-[#F5F0EB]"
+                    }`}
+                  >
+                    <div className="font-semibold">{t.label}</div>
+                    <div className="text-[10px] opacity-80 leading-tight mt-0.5">{t.desc}</div>
+                    <div className="text-[10px] mt-1">×{t.tokenMultiplier} ток/фото</div>
+                  </button>
+                ))}
+              </div>
             </div>
-            {quality !== "standard" && (
-              <p className="text-[10px] text-[#6B6560] mt-1.5">
-                Plus/Pro — нові моделі Google (можуть потребувати дозволу від Google). Якщо буде помилка — скинь її мені.
-              </p>
-            )}
-          </div>
+          )}
 
           {/* Cost preview */}
           <div className="bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-sm flex items-center justify-between">

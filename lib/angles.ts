@@ -46,15 +46,19 @@ export interface QualityTier {
   model: string;            // Gemini image model id
   location: string;         // Vertex location: "us-central1" (regional) or "global"
   tokenMultiplier: number;  // image cost relative to Standard
+  available: boolean;       // shown in the UI? Plus/Pro are off until quota/time allows
 }
 
 // Standard runs today on Vertex us-central1. Plus/Pro are Gemini 3 image models —
-// GLOBAL-only and may require a Google allowlist on the project.
+// GLOBAL-only, allowlist-gated, and with a TINY trial quota (they 429 under any
+// real load) — disabled until the project is on Vercel Pro / has a quota bump.
 export const QUALITY_TIERS: Record<QualityId, QualityTier> = {
-  standard: { id: "standard", label: "Standard", desc: "Базова якість", model: "gemini-2.5-flash-image", location: "us-central1", tokenMultiplier: 1 },
-  plus:     { id: "plus",     label: "Plus",     desc: "Краще, до 4K (Nano Banana 2)", model: "gemini-3.1-flash-image", location: "global", tokenMultiplier: 2 },
-  pro:      { id: "pro",      label: "Pro",      desc: "Топ + точний текст/лого", model: "gemini-3-pro-image", location: "global", tokenMultiplier: 3 },
+  standard: { id: "standard", label: "Standard", desc: "Базова якість", model: "gemini-2.5-flash-image", location: "us-central1", tokenMultiplier: 1, available: true },
+  plus:     { id: "plus",     label: "Plus",     desc: "Краще, до 4K (Nano Banana 2)", model: "gemini-3.1-flash-image", location: "global", tokenMultiplier: 2, available: false },
+  pro:      { id: "pro",      label: "Pro",      desc: "Топ + точний текст/лого", model: "gemini-3-pro-image", location: "global", tokenMultiplier: 3, available: false },
 };
+
+export const AVAILABLE_TIERS = Object.values(QUALITY_TIERS).filter((t) => t.available);
 
 export function qualityTier(id?: string): QualityTier {
   return QUALITY_TIERS[(id as QualityId)] ?? QUALITY_TIERS.standard;
