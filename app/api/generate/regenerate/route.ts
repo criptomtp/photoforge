@@ -1,9 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
-import { generateImage, type GeminiImagePart } from "@/lib/gemini";
+import { generateImage, imageInstructionsFor, type GeminiImagePart } from "@/lib/gemini";
 import { uploadImage } from "@/lib/supabase/storage";
 import { resolveApiKey } from "@/lib/tokens";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { TOKEN_COSTS } from "@/lib/angles";
+import { category } from "@/lib/categories";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 120;
@@ -28,11 +29,12 @@ export async function POST(request: Request) {
   // Ownership check (the row must belong to the caller).
   const { data: gen } = await supabase
     .from("generations")
-    .select("id, image_urls")
+    .select("id, image_urls, category")
     .eq("id", generationId)
     .eq("user_id", user.id)
     .single();
   if (!gen) return NextResponse.json({ error: "Генерацію не знайдено" }, { status: 404 });
+  const cat = category(gen.category as string | undefined);
 
   let apiKey: string | null;
   let byok: boolean;
@@ -57,7 +59,7 @@ export async function POST(request: Request) {
   let lastErr = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      base64 = await generateImage(apiKey, prompt, referenceParts);
+      base64 = await generateImage(apiKey, prompt, referenceParts, undefined, undefined, imageInstructionsFor(cat));
       break;
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);

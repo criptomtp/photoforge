@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import { generatePrompts, generateImage, type GeminiImagePart } from "@/lib/gemini";
+import { generatePrompts, generateImage, imageInstructionsFor, type GeminiImagePart } from "@/lib/gemini";
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveApiKey, reserveTokens, refundTokens } from "@/lib/tokens";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
@@ -182,7 +182,7 @@ export async function POST(request: Request) {
           let lastErr = "";
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-              base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location);
+              base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location, imageInstructionsFor(cat));
               break;
             } catch (e) {
               lastErr = e instanceof Error ? e.message : String(e);
