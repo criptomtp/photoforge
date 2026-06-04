@@ -425,6 +425,7 @@ export default function GeneratePage() {
               disabled={isRunning}
             >
               <option value="">🏷️ Студія — чистий каталоговий фон (без сцени)</option>
+              <option value="any">🌆 Сцена — будь-яка (AI обирає різні локації)</option>
               {SEASONS.map((s) => <option key={s} value={s}>🌆 Сцена — {s}</option>)}
             </select>
           </div>
