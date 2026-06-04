@@ -3,7 +3,7 @@ import { generatePrompts, generateImage, type GeminiImagePart } from "@/lib/gemi
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveApiKey, reserveTokens, refundTokens } from "@/lib/tokens";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
-import { ANGLE_DEFS, resolveAngles, costForAngles, refundForRun, netCostForRun } from "@/lib/angles";
+import { ANGLE_DEFS, resolveAngles, costForAngles, refundForRun, netCostForRun, qualityTier } from "@/lib/angles";
 
 export const maxDuration = 300;
 
@@ -33,6 +33,7 @@ export async function POST(request: Request) {
         const gender      = formData.get("gender") as string;
         const imageFiles  = formData.getAll("images") as File[];
         const angleIds    = formData.getAll("angles") as string[];
+        const tier        = qualityTier(formData.get("quality")?.toString());
 
         if (imageFiles.length === 0) {
           send({ type: "error", message: "Завантажте хоча б одне референс-фото" });
@@ -124,7 +125,7 @@ export async function POST(request: Request) {
         // hole that let an underfunded user generate unlimited free images.
         if (!byok && !freeQuota) {
           try {
-            await reserveTokens(user.id, generationId, N);
+            await reserveTokens(user.id, generationId, N, tier.tokenMultiplier);
           } catch {
             await supabase
               .from("generations")
@@ -132,7 +133,7 @@ export async function POST(request: Request) {
               .eq("id", generationId);
             send({
               type: "error",
-              message: `Недостатньо токенів для ${N} ракурсів (потрібно ${costForAngles(N).toFixed(2)}). Поповніть баланс або додайте власний Gemini ключ.`,
+              message: `Недостатньо токенів для ${N} ракурсів (потрібно ${costForAngles(N, tier.tokenMultiplier).toFixed(2)}). Поповніть баланс або додайте власний Gemini ключ.`,
             });
             controller.close();
             return;
@@ -179,7 +180,7 @@ export async function POST(request: Request) {
           let lastErr = "";
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-              base64Image = await generateImage(apiKey, prompts[i], referenceParts);
+              base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location);
               break;
             } catch (e) {
               lastErr = e instanceof Error ? e.message : String(e);
@@ -252,7 +253,7 @@ export async function POST(request: Request) {
         // ── 9. Reconcile the reservation: refund tokens for failed images ──
         let cost = 0;
         if (!byok && !freeQuota) {
-          const refund = refundForRun(N, imagesGenerated);
+          const refund = refundForRun(N, imagesGenerated, tier.tokenMultiplier);
           if (refund > 0) {
             const failed = N - imagesGenerated;
             await refundTokens(
@@ -264,7 +265,7 @@ export async function POST(request: Request) {
                 : `Повернення за ${failed} невдалих фото`
             ).catch((e) => console.error("Token refund failed:", e));
           }
-          cost = netCostForRun(N, imagesGenerated);
+          cost = netCostForRun(N, imagesGenerated, tier.tokenMultiplier);
         }
 
         // ── 10. Finalise DB ────────────────────────────────────────────────

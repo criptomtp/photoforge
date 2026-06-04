@@ -109,9 +109,10 @@ export async function creditTokens(
 export async function reserveTokens(
   userId: string,
   generationId: string,
-  angleCount: number
+  angleCount: number,
+  tokenMultiplier = 1
 ): Promise<number> {
-  const cost = costForAngles(angleCount);
+  const cost = costForAngles(angleCount, tokenMultiplier);
 
   const { error } = await supabaseAdmin.rpc("deduct_tokens_tx", {
     p_user_id: userId,

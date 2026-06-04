@@ -31,29 +31,51 @@ export const PRESETS: readonly AnglePreset[] = [
   { id: "front_only", label: "Тільки Full-body front",      angles: ["fullbody_front"] },
 ] as const;
 
-// ── Token economics ──────────────────────────────────────────────────────────
+// ── Token economics & quality tiers ──────────────────────────────────────────
 export const TOKEN_COSTS = {
-  prompt_gen: 0.10,                  // one prompt-generation call (Gemini Flash text)
-  image_gen:  0.50,                  // per image (Gemini Flash Image)
+  prompt_gen: 0.10,                  // one prompt-generation call (Gemini text)
+  image_gen:  0.50,                  // per image at Standard quality
 } as const;
 
-export function costForAngles(angleCount: number): number {
-  return TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * angleCount;
+export type QualityId = "standard" | "plus" | "pro";
+
+export interface QualityTier {
+  id: QualityId;
+  label: string;
+  desc: string;
+  model: string;            // Gemini image model id
+  location: string;         // Vertex location: "us-central1" (regional) or "global"
+  tokenMultiplier: number;  // image cost relative to Standard
+}
+
+// Standard runs today on Vertex us-central1. Plus/Pro are Gemini 3 image models —
+// GLOBAL-only and may require a Google allowlist on the project.
+export const QUALITY_TIERS: Record<QualityId, QualityTier> = {
+  standard: { id: "standard", label: "Standard", desc: "Базова якість", model: "gemini-2.5-flash-image", location: "us-central1", tokenMultiplier: 1 },
+  plus:     { id: "plus",     label: "Plus",     desc: "Краще, до 4K (Nano Banana 2)", model: "gemini-3.1-flash-image", location: "global", tokenMultiplier: 2 },
+  pro:      { id: "pro",      label: "Pro",      desc: "Топ + точний текст/лого", model: "gemini-3-pro-image", location: "global", tokenMultiplier: 3 },
+};
+
+export function qualityTier(id?: string): QualityTier {
+  return QUALITY_TIERS[(id as QualityId)] ?? QUALITY_TIERS.standard;
+}
+
+export function costForAngles(angleCount: number, tokenMultiplier = 1): number {
+  return TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * tokenMultiplier * angleCount;
 }
 
 export const FULL_RUN_COST = costForAngles(ANGLE_DEFS.length); // 0.10 + 0.50*8 = 4.10
 
-// Net tokens actually charged for a run: the prompt cost plus per-image cost for
-// SUCCESSFUL images only. The full cost is reserved up-front (costForAngles) and
-// failed images are refunded. Zero successful images ⇒ nothing is charged.
-export function netCostForRun(angleCount: number, imagesGenerated: number): number {
+// Net tokens actually charged for a run: prompt cost + per-image cost for the
+// images that SUCCEEDED. Full cost is reserved up-front; failures are refunded.
+export function netCostForRun(angleCount: number, imagesGenerated: number, tokenMultiplier = 1): number {
   if (imagesGenerated <= 0) return 0;
-  return TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * Math.min(imagesGenerated, angleCount);
+  return TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * tokenMultiplier * Math.min(imagesGenerated, angleCount);
 }
 
 // How much of the up-front reserve to give back, given how many images succeeded.
-export function refundForRun(angleCount: number, imagesGenerated: number): number {
-  const refund = costForAngles(angleCount) - netCostForRun(angleCount, imagesGenerated);
+export function refundForRun(angleCount: number, imagesGenerated: number, tokenMultiplier = 1): number {
+  const refund = costForAngles(angleCount, tokenMultiplier) - netCostForRun(angleCount, imagesGenerated, tokenMultiplier);
   return refund > 0 ? refund : 0;
 }
 

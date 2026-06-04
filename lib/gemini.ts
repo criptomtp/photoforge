@@ -19,7 +19,8 @@ const numWord = (n: number) => UA_NUM[n] ?? String(n);
 async function callGenerateContent(
   model: string,
   body: object,
-  apiKey: string | null
+  apiKey: string | null,
+  location?: string
 ): Promise<Response> {
   if (apiKey !== null) {
     return fetch(`${STUDIO_BASE}/${model}:generateContent?key=${apiKey}`, {
@@ -33,11 +34,12 @@ async function callGenerateContent(
   // and use the non-prefixed host aiplatform.googleapis.com; regional models
   // (e.g. gemini-2.5-flash-image in us-central1) use {location}-aiplatform...
   const { getVertexToken, VERTEX_PROJECT, VERTEX_LOCATION } = await import("./vertex-auth");
+  const loc = location ?? VERTEX_LOCATION;
   const token = await getVertexToken();
-  const host = VERTEX_LOCATION === "global"
+  const host = loc === "global"
     ? "https://aiplatform.googleapis.com"
-    : `https://${VERTEX_LOCATION}-aiplatform.googleapis.com`;
-  const url = `${host}/v1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
+    : `https://${loc}-aiplatform.googleapis.com`;
+  const url = `${host}/v1/projects/${VERTEX_PROJECT}/locations/${loc}/publishers/google/models/${model}:generateContent`;
   return fetch(url, {
     method: "POST",
     headers: {
@@ -241,7 +243,9 @@ export async function generatePrompts(
 export async function generateImage(
   apiKey: string | null,
   prompt: string,
-  referenceImages: GeminiImagePart[]
+  referenceImages: GeminiImagePart[],
+  modelOverride?: string,
+  locationOverride?: string
 ): Promise<string> {
   // Use only the first reference image (main reference) for image generation
   const refPart = referenceImages[0];
@@ -263,9 +267,9 @@ export async function generateImage(
   };
 
   // AI Studio uses a special preview model; Vertex AI uses its own image model
-  const model = apiKey === null
+  const model = modelOverride ?? (apiKey === null
     ? (await import("./vertex-auth")).VERTEX_IMAGE_MODEL
-    : STUDIO_IMAGE_MODEL;
+    : STUDIO_IMAGE_MODEL);
 
   // AI Studio image gen requires x-goog-api-key header (not query param)
   let res: Response;
@@ -282,7 +286,7 @@ export async function generateImage(
       }
     );
   } else {
-    res = await callGenerateContent(model, body, null);
+    res = await callGenerateContent(model, body, null, locationOverride);
   }
 
   if (!res.ok) {
