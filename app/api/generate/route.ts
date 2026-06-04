@@ -222,10 +222,11 @@ export async function POST(request: Request) {
           }
         };
 
-        // Concurrency pool: workers pull indices off a shared queue. Capped to
-        // stay under the Vertex trial's per-minute quota while still finishing
-        // the batch in one short wave within the serverless time budget.
-        const CONCURRENCY = Math.min(prompts.length, 6);
+        // Concurrency pool: workers pull indices off a shared queue. Run ALL
+        // angles at once (one wave) so an 8-angle batch finishes within the 60s
+        // budget instead of spilling into a slow second wave. Upper bound 8 keeps
+        // a pathological angle count from hammering the Vertex quota.
+        const CONCURRENCY = Math.min(prompts.length, 8);
         const queue = prompts.map((_, i) => i);
         await Promise.all(
           Array.from({ length: CONCURRENCY }, async () => {
