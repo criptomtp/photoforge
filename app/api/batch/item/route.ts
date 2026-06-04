@@ -30,8 +30,22 @@ interface BatchItemBody {
   mode?: "images" | "descriptions" | "both";
 }
 
+// Block SSRF: only public http(s) hosts (no localhost / metadata / private ranges).
+function isSafeUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase();
+    if (h === "localhost" || h === "0.0.0.0" || h === "::1" || h.endsWith(".local") || h.endsWith(".internal")) return false;
+    if (/^(127\.|10\.|192\.168\.|169\.254\.|fc00:|fe80:)/.test(h)) return false;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return false;
+    return true;
+  } catch { return false; }
+}
+
 // Fetch a reference photo by URL (server-side → avoids browser CORS), bounded.
 async function fetchImageAsPart(url: string, timeoutMs = 20000): Promise<GeminiImagePart | null> {
+  if (!isSafeUrl(url)) return null;
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
