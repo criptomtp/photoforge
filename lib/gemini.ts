@@ -468,3 +468,87 @@ export async function generateImage(
 
   return imgData.data; // base64 string
 }
+
+// ── AI marketplace listing (title / description / bullets / tags) ────────────
+export interface ProductInfo {
+  name?: string;        // Товар / Вид (e.g. "Костюм")
+  productType?: string; // hero product, if distinct
+  brand?: string;
+  color?: string;
+  size?: string;
+  gender?: string;
+  season?: string;
+  composition?: string; // Склад
+  country?: string;
+  sku?: string;
+}
+
+export interface Listing {
+  title: string;
+  description: string;
+  bullets: string[];
+  tags: string[];
+}
+
+/**
+ * Generates a sales-ready marketplace listing from product data (+ optional
+ * reference photo) using the fast text model. Returns structured JSON.
+ */
+export async function generateListing(
+  apiKey: string | null,
+  product: ProductInfo,
+  referenceImage?: GeminiImagePart,
+  lang: string = "українською"
+): Promise<Listing> {
+  const system = `Ти — досвідчений копірайтер карток товару для маркетплейсів (Rozetka, Prom, Amazon, Etsy). На основі даних товару (і фото, якщо додано) напиши ПРОДАЮЧИЙ лістинг ${lang}. Пиши природно, по суті, без води й канцеляриту, з пошуковими ключовими словами. Поверни СТРОГО валідний JSON без markdown:
+{"title": "...", "description": "...", "bullets": ["...","..."], "tags": ["...","..."]}
+Вимоги: title ≤ 80 символів, чіпляючий і продаючий; description — 2-3 абзаци (переваги, матеріал/склад, для кого, як і з чим носити); bullets — рівно 5 коротких ключових переваг; tags — рівно 13 релевантних пошукових тегів (1-3 слова, без #).`;
+
+  const dataText =
+    "ДАНІ ТОВАРУ:\n" +
+    (product.name ? `Назва/тип: ${product.name}\n` : "") +
+    (product.productType ? `Товар-герой: ${product.productType}\n` : "") +
+    (product.brand ? `Бренд: ${product.brand}\n` : "") +
+    (product.color ? `Колір: ${product.color}\n` : "") +
+    (product.size ? `Розмір: ${product.size}\n` : "") +
+    (product.gender ? `Стать/аудиторія: ${product.gender}\n` : "") +
+    (product.season ? `Сезон: ${product.season}\n` : "") +
+    (product.composition ? `Склад: ${product.composition}\n` : "") +
+    (product.country ? `Країна: ${product.country}\n` : "") +
+    "Напиши лістинг (строгий JSON).";
+
+  const userParts: Array<{ inline_data: { mime_type: string; data: string } } | { text: string }> = [];
+  if (referenceImage) userParts.push({ inline_data: referenceImage.inline_data });
+  userParts.push({ text: dataText });
+
+  const body = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts: userParts }],
+    generationConfig: { responseMimeType: "application/json", temperature: 0.7 },
+  };
+
+  const model = apiKey === null
+    ? (await import("./vertex-auth")).VERTEX_PROMPT_MODEL
+    : STUDIO_PROMPT_MODEL;
+  const res = await callGenerateContent(model, body, apiKey, undefined, 40_000);
+  if (!res.ok) throw new Error(`Listing error ${res.status}: ${await res.text()}`);
+
+  const data = await res.json();
+  const text: string = (data.candidates?.[0]?.content?.parts ?? [])
+    .map((p: { text?: string }) => p.text ?? "").join("").trim();
+
+  let parsed: Partial<Listing> | null = null;
+  try { parsed = JSON.parse(text); }
+  catch {
+    const m = text.match(/\{[\s\S]*\}/);
+    parsed = m ? JSON.parse(m[0]) : null;
+  }
+  if (!parsed) throw new Error("Не вдалося розібрати опис (порожня відповідь моделі).");
+
+  return {
+    title: String(parsed.title ?? "").slice(0, 200),
+    description: String(parsed.description ?? ""),
+    bullets: Array.isArray(parsed.bullets) ? parsed.bullets.map(String).slice(0, 8) : [],
+    tags: Array.isArray(parsed.tags) ? parsed.tags.map(String).slice(0, 15) : [],
+  };
+}
