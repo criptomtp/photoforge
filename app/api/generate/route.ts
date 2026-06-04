@@ -194,14 +194,20 @@ export async function POST(request: Request) {
           // 2× with short backoff. Each call is timeout-bounded inside generateImage.
           let base64Image: string | null = null;
           let lastErr = "";
-          for (let attempt = 1; attempt <= 2; attempt++) {
+          for (let attempt = 1; attempt <= 3; attempt++) {
             try {
               base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location, imageInstructionsFor(cat, productType));
               break;
             } catch (e) {
               lastErr = e instanceof Error ? e.message : String(e);
-              console.error(`Image ${i + 1} attempt ${attempt}/2 failed:`, lastErr);
-              if (attempt < 2) await new Promise((r) => setTimeout(r, 600));
+              console.error(`Image ${i + 1} attempt ${attempt}/3 failed:`, lastErr);
+              // 429/RESOURCE_EXHAUSTED is a Vertex quota throttle — back off longer
+              // (with jitter) so the retry lands after the quota window refills.
+              const rateLimited = /\b429\b|RESOURCE_EXHAUSTED/i.test(lastErr);
+              if (attempt < 3) {
+                const base = rateLimited ? 3500 : 700;
+                await new Promise((r) => setTimeout(r, base * attempt + Math.floor(Math.random() * 600)));
+              }
             }
           }
 
@@ -222,11 +228,12 @@ export async function POST(request: Request) {
           }
         };
 
-        // Concurrency pool: workers pull indices off a shared queue. Run ALL
-        // angles at once (one wave) so an 8-angle batch finishes within the 60s
-        // budget instead of spilling into a slow second wave. Upper bound 8 keeps
-        // a pathological angle count from hammering the Vertex quota.
-        const CONCURRENCY = Math.min(prompts.length, 8);
+        // Concurrency pool: workers pull indices off a shared queue. The binding
+        // limit is the Vertex image-model QUOTA (429 RESOURCE_EXHAUSTED), not the
+        // CPU — firing all 8 at once exhausts it. Keep it low (env-tunable) and
+        // lean on the 429-aware backoff in generateOne. Pro's quota is tiny, so
+        // Pro effectively needs CONCURRENCY=1-2 + a long time budget.
+        const CONCURRENCY = Math.min(prompts.length, Number(process.env.IMAGE_CONCURRENCY) || 3);
         const queue = prompts.map((_, i) => i);
         await Promise.all(
           Array.from({ length: CONCURRENCY }, async () => {
