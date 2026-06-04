@@ -40,8 +40,9 @@ export async function POST(request: Request) {
   let apiKey: string | null;
   let byok: boolean;
   let freeQuota: boolean;
+  let admin: boolean;
   try {
-    ({ apiKey, byok, freeQuota } = await resolveApiKey(user.id));
+    ({ apiKey, byok, freeQuota, admin } = await resolveApiKey(user.id, user.email));
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 402 });
   }
@@ -82,7 +83,7 @@ export async function POST(request: Request) {
 
   // Charge paid users for the one image (only on success). BYOK / free-quota /
   // Vertex pay nothing here.
-  if (!byok && !freeQuota) {
+  if (!byok && !freeQuota && !admin) {
     try {
       await supabaseAdmin.rpc("deduct_tokens_tx", {
         p_user_id: user.id,

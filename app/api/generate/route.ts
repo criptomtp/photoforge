@@ -88,9 +88,10 @@ export async function POST(request: Request) {
         let apiKey: string | null;
         let byok: boolean;
         let freeQuota: boolean;
+        let admin: boolean;
 
         try {
-          ({ apiKey, byok, freeQuota } = await resolveApiKey(user.id));
+          ({ apiKey, byok, freeQuota, admin } = await resolveApiKey(user.id, user.email));
         } catch (err) {
           send({ type: "error", message: (err as Error).message });
           controller.close();
@@ -131,7 +132,7 @@ export async function POST(request: Request) {
         // Charging the full N-image cost before generating closes the
         // "balance only checked for 1 image, deduction swallowed afterwards"
         // hole that let an underfunded user generate unlimited free images.
-        if (!byok && !freeQuota) {
+        if (!byok && !freeQuota && !admin) {
           try {
             await reserveTokens(user.id, generationId, N, tier.tokenMultiplier);
           } catch {
@@ -260,7 +261,7 @@ export async function POST(request: Request) {
 
         // ── 9. Reconcile the reservation: refund tokens for failed images ──
         let cost = 0;
-        if (!byok && !freeQuota) {
+        if (!byok && !freeQuota && !admin) {
           const refund = refundForRun(N, imagesGenerated, tier.tokenMultiplier);
           if (refund > 0) {
             const failed = N - imagesGenerated;
@@ -290,7 +291,8 @@ export async function POST(request: Request) {
           .eq("id", generationId);
 
         // Usage counter: paid/BYOK runs counted here; free runs counted up-front.
-        if (!freeQuota) {
+        // Admin (owner) runs are unlimited and not counted.
+        if (!freeQuota && !admin) {
           await supabase.rpc("increment_generations_used", { p_user_id: user.id });
         }
 
