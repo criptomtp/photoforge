@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { costForAngles, QUALITY_TIERS, AVAILABLE_TIERS, type QualityId } from "@/lib/angles";
 import { CATEGORY_LIST, category, type CategoryId } from "@/lib/categories";
@@ -43,6 +43,12 @@ export default function GeneratePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [regenIdx, setRegenIdx] = useState<number | null>(null);
+  // Auto-fill: after the main batch, sequentially regenerate the slots that
+  // failed (429 quota / STOP). Each is a fresh request (own time budget + a
+  // single image that doesn't trip the burst quota), paced to let the per-minute
+  // Vertex quota refill — gets to all photos for free on the low trial quota.
+  const [autoFill, setAutoFill] = useState<{ active: boolean; done: number; total: number }>({ active: false, done: 0, total: 0 });
+  const autoFilledRef = useRef<string>("");
 
   // Switching category swaps the entire angle set, so reset the picker to the
   // new category's full preset (old angle IDs don't exist in the new set).
@@ -287,6 +293,52 @@ export default function GeneratePage() {
       setRegenIdx(null);
     }
   }
+
+  // Regenerate failed slots one-by-one, paced, as separate requests.
+  async function autoFillFailed(genId: string, indices: number[], prompts: string[]) {
+    setAutoFill({ active: true, done: 0, total: indices.length });
+    let done = 0;
+    for (const i of indices) {
+      const prompt = prompts[i];
+      if (prompt) {
+        // Pace so the per-minute Vertex quota refills between single requests.
+        await new Promise((r) => setTimeout(r, 8000));
+        try {
+          const fd = new FormData();
+          fd.append("generationId", genId);
+          fd.append("index", String(i));
+          fd.append("prompt", prompt);
+          images.forEach((img) => fd.append("images", img));
+          const res = await fetch("/api/generate/regenerate", { method: "POST", body: fd });
+          const data = await res.json().catch(() => ({} as { url?: string }));
+          if (res.ok && data.url) {
+            setState((s) => {
+              if (s.phase !== "done") return s;
+              const urls = [...s.urls];
+              urls[i] = data.url!;
+              return { ...s, urls, imageErrors: s.imageErrors.filter((e) => !e.startsWith(`Фото ${i + 1}:`)) };
+            });
+          }
+        } catch { /* leave empty — manual «Перегенерувати» remains */ }
+      }
+      done++;
+      setAutoFill((a) => ({ ...a, done }));
+    }
+    setAutoFill({ active: false, done: 0, total: 0 });
+  }
+
+  // When a run finishes with some empty slots, auto-fill them once.
+  useEffect(() => {
+    if (state.phase !== "done" || !state.generationId) return;
+    if (autoFilledRef.current === state.generationId) return;
+    if (images.length === 0 || state.prompts.length === 0) return;
+    const empty = state.urls.map((u, i) => (u ? -1 : i)).filter((i) => i >= 0);
+    // Skip if nothing failed, or EVERYTHING failed (systemic error — don't hammer).
+    if (empty.length === 0 || empty.length >= state.urls.length) return;
+    autoFilledRef.current = state.generationId;
+    void autoFillFailed(state.generationId, empty, state.prompts);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.phase]);
 
   const isRunning = state.phase === "running";
   const isDone = state.phase === "done";
@@ -596,6 +648,12 @@ export default function GeneratePage() {
 
           {isDone && (
             <div className="space-y-4">
+              {autoFill.active && (
+                <div className="bg-[#E8943A]/10 border border-[#E8943A]/30 rounded-xl px-4 py-3 text-[#E8943A] text-sm flex items-center gap-2">
+                  <span className="animate-pulse">⏳</span>
+                  Докручую фото, що не вийшли з першого разу… {autoFill.done}/{autoFill.total}
+                </div>
+              )}
               {state.imageErrors.length > 0 && (
                 <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 space-y-1">
                   <p className="text-red-400 text-sm font-medium">Помилки генерації:</p>

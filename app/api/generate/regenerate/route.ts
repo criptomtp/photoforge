@@ -65,7 +65,8 @@ export async function POST(request: Request) {
       break;
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 1200 * attempt));
+      const rateLimited = /\b429\b|RESOURCE_EXHAUSTED/i.test(lastErr);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, (rateLimited ? 4000 : 1200) * attempt));
     }
   }
   if (!base64) {
