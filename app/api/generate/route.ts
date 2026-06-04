@@ -10,7 +10,7 @@ export const maxDuration = 300;
 
 type SSEEvent =
   | { type: "status"; message: string }
-  | { type: "prompts_ready"; count: number }
+  | { type: "prompts_ready"; count: number; prompts: string[]; generationId: string }
   | { type: "image_start"; index: number; total: number; angle: string }
   | { type: "image_done"; index: number; url: string; error?: string }
   | { type: "done"; generationId: string; urls: string[]; prompts: string[]; byok: boolean; driveUrl?: string; cost: number }
@@ -171,30 +171,37 @@ export async function POST(request: Request) {
         send({ type: "status", message: `${provider}: генерую промпти...` });
 
         const prompts = await generatePrompts(apiKey, cat, productType, season, gender, referenceParts, angles);
-        send({ type: "prompts_ready", count: prompts.length });
+        // Send the prompts NOW (not only in "done") so they show immediately and
+        // survive even if image generation is slow or the request is cut short.
+        send({ type: "prompts_ready", count: prompts.length, prompts, generationId });
+        // Persist prompts up-front too, so the History page has them even if the
+        // run is interrupted before the final write.
+        await supabase.from("generations").update({ prompts }).eq("id", generationId);
 
-        // ── 7. Generate images via Gemini 2.5 Flash ────────────────────────
+        // ── 7. Generate images IN PARALLEL ─────────────────────────────────
+        // Sequential generation (8 × ~20-40s) overruns Vercel Hobby's 60s cap and
+        // strands the tail. A bounded concurrency pool runs them together so the
+        // whole batch fits one short wave.
         await ensureBucket();
-        const imageUrls: string[] = [];
+        const imageUrls: string[] = new Array(prompts.length).fill("");
         let imagesGenerated = 0;
 
-        for (let i = 0; i < prompts.length; i++) {
+        const generateOne = async (i: number): Promise<void> => {
           const angleName = angles[i]?.label ?? `Ракурс ${i + 1}`;
           send({ type: "image_start", index: i + 1, total: N, angle: angleName });
 
-          // Gemini image generation is flaky (safety re-rolls + transient errors),
-          // so retry each image up to 3× before giving up — mirrors the Make
-          // blueprint's "if it errors, regenerate" rule and lifts the hit rate.
+          // Image gen is flaky (safety re-rolls + transient errors); retry up to
+          // 2× with short backoff. Each call is timeout-bounded inside generateImage.
           let base64Image: string | null = null;
           let lastErr = "";
-          for (let attempt = 1; attempt <= 3; attempt++) {
+          for (let attempt = 1; attempt <= 2; attempt++) {
             try {
               base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location, imageInstructionsFor(cat, productType));
               break;
             } catch (e) {
               lastErr = e instanceof Error ? e.message : String(e);
-              console.error(`Image ${i + 1} attempt ${attempt}/3 failed:`, lastErr);
-              if (attempt < 3) await new Promise((r) => setTimeout(r, 1200 * attempt));
+              console.error(`Image ${i + 1} attempt ${attempt}/2 failed:`, lastErr);
+              if (attempt < 2) await new Promise((r) => setTimeout(r, 600));
             }
           }
 
@@ -202,24 +209,32 @@ export async function POST(request: Request) {
             try {
               const path = `${user.id}/${generationId}/${i + 1}.jpg`;
               const url  = await uploadImage(base64Image, path);
-              imageUrls.push(url);
+              imageUrls[i] = url;
               imagesGenerated++;
               send({ type: "image_done", index: i + 1, url });
-              await supabase
-                .from("generations")
-                .update({ images_generated: imagesGenerated })
-                .eq("id", generationId);
             } catch (upErr) {
               const errMsg = upErr instanceof Error ? upErr.message : String(upErr);
               console.error(`Image ${i + 1} upload failed:`, errMsg);
-              imageUrls.push("");
               send({ type: "image_done", index: i + 1, url: "", error: errMsg });
             }
           } else {
-            imageUrls.push("");
             send({ type: "image_done", index: i + 1, url: "", error: lastErr });
           }
-        }
+        };
+
+        // Concurrency pool: workers pull indices off a shared queue. Capped to
+        // stay under the Vertex trial's per-minute quota while still finishing
+        // the batch in one short wave within the serverless time budget.
+        const CONCURRENCY = Math.min(prompts.length, 6);
+        const queue = prompts.map((_, i) => i);
+        await Promise.all(
+          Array.from({ length: CONCURRENCY }, async () => {
+            let idx: number | undefined;
+            while ((idx = queue.shift()) !== undefined) {
+              await generateOne(idx);
+            }
+          })
+        );
 
         // ── 8. Upload to Google Drive if connected ─────────────────────────
         let driveFolderUrl: string | undefined;

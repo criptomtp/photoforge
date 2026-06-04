@@ -9,6 +9,23 @@ const STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const STUDIO_PROMPT_MODEL = process.env.STUDIO_PROMPT_MODEL ?? "gemini-2.5-pro";
 const STUDIO_IMAGE_MODEL = process.env.STUDIO_IMAGE_MODEL ?? "gemini-2.5-flash-image";
 
+// fetch with a hard timeout. Without it a hung Gemini/Vertex call blocks until
+// the whole serverless function is killed — on Vercel Hobby that's a silent 60s
+// cap that strands the rest of the run. A bounded timeout fails ONE image fast
+// so the others (run in parallel) still complete.
+async function fetchWithTimeout(url: string, opts: RequestInit, ms: number): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    if (ctrl.signal.aborted) throw new Error(`Таймаут запиту до Gemini (${Math.round(ms / 1000)}с)`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Routes a generateContent request to either:
  * - Google AI Studio (BYOK) when apiKey is a string
@@ -18,14 +35,15 @@ async function callGenerateContent(
   model: string,
   body: object,
   apiKey: string | null,
-  location?: string
+  location?: string,
+  timeoutMs = 60_000
 ): Promise<Response> {
   if (apiKey !== null) {
-    return fetch(`${STUDIO_BASE}/${model}:generateContent?key=${apiKey}`, {
+    return fetchWithTimeout(`${STUDIO_BASE}/${model}:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, timeoutMs);
   }
 
   // Vertex AI path. Gemini 3 image models (Nano Banana 2 / Pro) are GLOBAL-only
@@ -38,14 +56,14 @@ async function callGenerateContent(
     ? "https://aiplatform.googleapis.com"
     : `https://${loc}-aiplatform.googleapis.com`;
   const url = `${host}/v1/projects/${VERTEX_PROJECT}/locations/${loc}/publishers/google/models/${model}:generateContent`;
-  return fetch(url, {
+  return fetchWithTimeout(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(body),
-  });
+  }, timeoutMs);
 }
 
 // ── Corrected system prompts (council-designed, 2026-06-04) ──────────────────
@@ -315,7 +333,9 @@ export async function generatePrompts(
     ? (await import("./vertex-auth")).VERTEX_PROMPT_MODEL
     : STUDIO_PROMPT_MODEL;
 
-  const res = await callGenerateContent(model, body, apiKey);
+  // Prompt generation (gemini-2.5-pro) is the slowest single call; bound it so it
+  // can't eat the whole request budget before image generation even starts.
+  const res = await callGenerateContent(model, body, apiKey, undefined, 45_000);
 
   if (!res.ok) {
     const err = await res.text();
@@ -388,10 +408,13 @@ export async function generateImage(
     ? (await import("./vertex-auth")).VERTEX_IMAGE_MODEL
     : STUDIO_IMAGE_MODEL);
 
-  // AI Studio image gen requires x-goog-api-key header (not query param)
+  // AI Studio image gen requires x-goog-api-key header (not query param).
+  // 50s timeout: a single hung image fails fast instead of stranding the run
+  // (the others generate in parallel and still finish within the 60s budget).
+  const IMG_TIMEOUT = 50_000;
   let res: Response;
   if (apiKey !== null) {
-    res = await fetch(
+    res = await fetchWithTimeout(
       `${STUDIO_BASE}/${model}:generateContent`,
       {
         method: "POST",
@@ -400,10 +423,11 @@ export async function generateImage(
           "x-goog-api-key": apiKey,
         },
         body: JSON.stringify(body),
-      }
+      },
+      IMG_TIMEOUT
     );
   } else {
-    res = await callGenerateContent(model, body, null, locationOverride);
+    res = await callGenerateContent(model, body, null, locationOverride, IMG_TIMEOUT);
   }
 
   if (!res.ok) {

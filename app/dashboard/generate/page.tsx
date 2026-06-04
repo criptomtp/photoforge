@@ -10,7 +10,7 @@ const GENDERS = ["Чоловіча", "Жіноча", "Хлопчик", "Дівч
 
 type GenerationState =
   | { phase: "idle" }
-  | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[]; imageErrors: string[]; angleLabels: string[] }
+  | { phase: "running"; status: string; current: number; total: number; urls: (string | null)[]; imageErrors: string[]; angleLabels: string[]; prompts: string[]; generationId: string }
   | { phase: "done"; generationId: string; urls: string[]; prompts: string[]; byok: boolean; driveUrl?: string; imageErrors: string[]; angleLabels: string[]; cost: number }
   | { phase: "error"; message: string };
 
@@ -99,6 +99,8 @@ export default function GeneratePage() {
       urls: Array(N).fill(null),
       imageErrors: [],
       angleLabels,
+      prompts: [],
+      generationId: "",
     });
 
     const formData = new FormData();
@@ -152,7 +154,12 @@ export default function GeneratePage() {
             case "prompts_ready":
               setState((s) =>
                 s.phase === "running"
-                  ? { ...s, status: `Промпти готові. Генерую ${event.count} зображень...` }
+                  ? {
+                      ...s,
+                      status: `Промпти готові. Генерую ${event.count} фото паралельно...`,
+                      prompts: event.prompts ?? [],
+                      generationId: event.generationId ?? s.generationId,
+                    }
                   : s
               );
               break;
@@ -160,12 +167,14 @@ export default function GeneratePage() {
             case "image_start":
               setState((s) =>
                 s.phase === "running"
-                  ? { ...s, status: `Генерую ${event.index}/${event.total}: ${event.angle}...`, current: event.index - 1 }
+                  ? { ...s, status: `Генерую: ${event.angle}...` }
                   : s
               );
               break;
 
             case "image_done":
+              // Parallel generation → events arrive out of order. Place by index,
+              // and count completed (success or fail) for the progress bar.
               setState((s) => {
                 if (s.phase !== "running") return s;
                 const urls = [...s.urls];
@@ -173,7 +182,7 @@ export default function GeneratePage() {
                 const imageErrors = event.error
                   ? [...s.imageErrors, `Фото ${event.index}: ${event.error}`]
                   : s.imageErrors;
-                return { ...s, current: event.index, urls, imageErrors };
+                return { ...s, current: s.current + 1, urls, imageErrors };
               });
               break;
 
@@ -197,6 +206,26 @@ export default function GeneratePage() {
           }
         }
       }
+
+      // Stream ended without a "done" event (e.g. server hit its time limit).
+      // Finalize with whatever arrived so the UI never hangs.
+      setState((s) => {
+        if (s.phase !== "running") return s;
+        const got = s.urls.filter(Boolean).length;
+        return {
+          phase: "done",
+          generationId: s.generationId,
+          urls: s.urls.map((u) => u ?? ""),
+          prompts: s.prompts,
+          byok: false,
+          imageErrors:
+            got < s.total
+              ? [...s.imageErrors, `Згенеровано ${got}/${s.total}. Решту перервано (ліміт часу). Натисни «↻ Перегенерувати» на порожніх.`]
+              : s.imageErrors,
+          angleLabels: s.angleLabels,
+          cost: 0,
+        };
+      });
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         setState({ phase: "error", message: (err as Error).message });
@@ -549,18 +578,17 @@ export default function GeneratePage() {
                     className={`aspect-[3/4] rounded-lg border flex items-center justify-center text-xs transition-all ${
                       url
                         ? "border-[#E8943A]/30 overflow-hidden"
-                        : i === state.current
-                        ? "border-[#E8943A] bg-[#1E1C19] animate-pulse"
-                        : "border-[#2A2723] bg-[#161412]"
+                        : "border-[#E8943A]/40 bg-[#1E1C19] animate-pulse"
                     }`}
                   >
                     {url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={url} alt={state.angleLabels[i] ?? ""} className="w-full h-full object-cover" />
+                      // Clickable the instant it's ready — no need to wait for the rest.
+                      <a href={url} target="_blank" rel="noopener noreferrer" className="block w-full h-full" title={`${state.angleLabels[i] ?? ""} — відкрити`}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={url} alt={state.angleLabels[i] ?? ""} className="w-full h-full object-cover hover:scale-105 transition-transform" />
+                      </a>
                     ) : (
-                      <span className={i === state.current ? "text-[#E8943A]" : "text-[#6B6560]"}>
-                        {i + 1}
-                      </span>
+                      <span className="text-[#6B6560]">{i + 1}</span>
                     )}
                   </div>
                 ))}
