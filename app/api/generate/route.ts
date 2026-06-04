@@ -27,9 +27,9 @@ export async function POST(request: Request) {
       try {
         // ── 1. Parse FormData ───────────────────────────────────────────────
         const formData = await request.formData();
-        const brand       = formData.get("brand") as string;
-        const productType = formData.get("productType") as string;
-        const season      = formData.get("season") as string;
+        const brand       = "";
+        const productType = (formData.get("productType") as string) ?? "";
+        const season      = (formData.get("season") as string) ?? "";
         const gender      = formData.get("gender") as string;
         const imageFiles  = formData.getAll("images") as File[];
         const angleIds    = formData.getAll("angles") as string[];
@@ -220,7 +220,7 @@ export async function POST(request: Request) {
         if (driveToken && imagesGenerated > 0) {
           try {
             send({ type: "status", message: "Завантажую на Google Drive..." });
-            const folderName = `${brand} — ${productType}`;
+            const folderName = productType || "PhotoForge товар";
             const { id: folderId, webViewLink } = await createDriveFolder(driveToken, folderName);
             driveFolderId = folderId;
             driveFolderUrl = webViewLink;

@@ -179,7 +179,7 @@ export async function generatePrompts(
 
   const body = {
     systemInstruction: {
-      parts: [{ text: buildSystemPrompt(angles) }],
+      parts: [{ text: buildSystemPrompt(angles, season ? "lifestyle" : "catalog") }],
     },
     contents: [
       {
@@ -187,7 +187,14 @@ export async function generatePrompts(
         parts: [
           ...imageParts,
           {
-            text: `Опис товару: Бренд: ${brand}\nВид: ${productType}\nСезонність: ${season}\nGender / цільова аудиторія: ${gender}\nСтвори ${N} детальних промптів згідно з правилами вище.`,
+            text:
+              `Товар визнач самостійно з доданого референс-фото (тип, колір, матеріал, деталі)` +
+              (productType ? ` — підказка від користувача: ${productType}.` : ".") + `\n` +
+              `Цільова аудиторія / Gender: ${gender}\n` +
+              (season
+                ? `Сезон/сцена: ${season} — покажи товар у відповідній сезонній lifestyle-сцені (саме в цьому сезоні).\n`
+                : `Сезон не задано — чистий нейтральний каталоговий фон.\n`) +
+              `Створи ${N} детальних промптів згідно з правилами вище.`,
           },
         ],
       },

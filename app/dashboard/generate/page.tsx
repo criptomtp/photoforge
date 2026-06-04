@@ -14,7 +14,6 @@ type GenerationState =
   | { phase: "error"; message: string };
 
 export default function GeneratePage() {
-  const [brand, setBrand] = useState("");
   const [productType, setProductType] = useState("");
   const [season, setSeason] = useState("");
   const [gender, setGender] = useState("");
@@ -89,7 +88,6 @@ export default function GeneratePage() {
     });
 
     const formData = new FormData();
-    formData.append("brand", brand);
     formData.append("productType", productType);
     formData.append("season", season);
     formData.append("gender", gender);
@@ -206,13 +204,13 @@ export default function GeneratePage() {
         const res = await fetch(url);
         const blob = await res.blob();
         const label = state.angleLabels[i]?.replace(/ /g, "_") ?? `angle_${i + 1}`;
-        zip.file(`${brand}_${label}.jpg`, blob);
+        zip.file(`${label}.jpg`, blob);
       })
     );
     const blob = await zip.generateAsync({ type: "blob" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${brand}_${productType}_photos.zip`;
+    a.download = `${productType || "photoforge"}_photos.zip`;
     a.click();
   }
 
@@ -248,7 +246,7 @@ export default function GeneratePage() {
 
   const isRunning = state.phase === "running";
   const isDone = state.phase === "done";
-  const canSubmit = selectedAngles.length > 0 && images.length > 0 && brand.trim() && productType.trim();
+  const canSubmit = selectedAngles.length > 0 && images.length > 0 && gender.trim();
 
   return (
     <div className="space-y-8">
@@ -262,44 +260,7 @@ export default function GeneratePage() {
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-[#6B6560] mb-2">Бренд</label>
-              <input
-                type="text"
-                value={brand}
-                onChange={(e) => setBrand(e.target.value)}
-                placeholder="Nike, Zara, H&M..."
-                className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors"
-                disabled={isRunning}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-[#6B6560] mb-2">Вид товару</label>
-              <input
-                type="text"
-                value={productType}
-                onChange={(e) => setProductType(e.target.value)}
-                placeholder="Пуховик, кросівки..."
-                className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors"
-                disabled={isRunning}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-[#6B6560] mb-2">Сезонність</label>
-              <select
-                value={season}
-                onChange={(e) => setSeason(e.target.value)}
-                className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] focus:outline-none focus:border-[#E8943A] transition-colors"
-                disabled={isRunning}
-              >
-                <option value="">Оберіть сезон</option>
-                {SEASONS.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-[#6B6560] mb-2">Стать</label>
+              <label className="block text-sm text-[#6B6560] mb-2">Стать <span className="text-[#E8943A]">*</span></label>
               <select
                 value={gender}
                 onChange={(e) => setGender(e.target.value)}
@@ -310,7 +271,33 @@ export default function GeneratePage() {
                 {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
               </select>
             </div>
+            <div>
+              <label className="block text-sm text-[#6B6560] mb-2">Вид товару <span className="text-[#6B6560]">(необов&apos;язково)</span></label>
+              <input
+                type="text"
+                value={productType}
+                onChange={(e) => setProductType(e.target.value)}
+                placeholder="AI визначить сам, або вкажи: пуховик, кросівки…"
+                className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] placeholder-[#6B6560] focus:outline-none focus:border-[#E8943A] transition-colors"
+                disabled={isRunning}
+              />
+            </div>
           </div>
+          <div>
+            <label className="block text-sm text-[#6B6560] mb-2">Сезон <span className="text-[#6B6560]">(необов&apos;язково)</span></label>
+            <select
+              value={season}
+              onChange={(e) => setSeason(e.target.value)}
+              className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] focus:outline-none focus:border-[#E8943A] transition-colors"
+              disabled={isRunning}
+            >
+              <option value="">Без сезону (чистий каталоговий фон)</option>
+              {SEASONS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <p className="text-xs text-[#6B6560] leading-snug">
+            🛈 <span className="text-[#8B857F]">Сезон = в якому сезоні/сцені показати товар.</span> Напр. купальник + «Зима» → купальник у зимовій сцені. Без сезону — чистий каталоговий фон. Сам товар AI визначає з фото.
+          </p>
 
           {/* ── Angle picker ───────────────────────────────────────────── */}
           <div>
