@@ -302,7 +302,7 @@ export default function GeneratePage() {
       const prompt = prompts[i];
       if (prompt) {
         // Pace so the per-minute Vertex quota refills between single requests.
-        await new Promise((r) => setTimeout(r, 8000));
+        await new Promise((r) => setTimeout(r, 12000));
         try {
           const fd = new FormData();
           fd.append("generationId", genId);
@@ -417,19 +417,19 @@ export default function GeneratePage() {
             🛈 <span className="text-[#8B857F]">Якщо на фото кілька речей</span> (напр. сорочка + джинси) — вкажи, яку саме рекламуєш. AI зробить її головною, а решту образу підбере під неї.
           </p>
           <div>
-            <label className="block text-sm text-[#6B6560] mb-2">Сезон <span className="text-[#6B6560]">(необов&apos;язково)</span></label>
+            <label className="block text-sm text-[#6B6560] mb-2">Фон <span className="text-[#6B6560]">(студія або сцена)</span></label>
             <select
               value={season}
               onChange={(e) => setSeason(e.target.value)}
               className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-4 py-3 text-[#F5F0EB] focus:outline-none focus:border-[#E8943A] transition-colors"
               disabled={isRunning}
             >
-              <option value="">Без сезону (чистий каталоговий фон)</option>
-              {SEASONS.map((s) => <option key={s} value={s}>{s}</option>)}
+              <option value="">🏷️ Студія — чистий каталоговий фон (без сцени)</option>
+              {SEASONS.map((s) => <option key={s} value={s}>🌆 Сцена — {s}</option>)}
             </select>
           </div>
           <p className="text-xs text-[#6B6560] leading-snug">
-            🛈 <span className="text-[#8B857F]">Сезон = в якому сезоні/сцені показати товар.</span> Напр. купальник + «Зима» → купальник у зимовій сцені. Без сезону — чистий каталоговий фон. Сам товар AI визначає з фото.
+            🛈 <span className="text-[#8B857F]">«Студія» = чистий нейтральний фон (як каталог).</span> Сезон = реальна lifestyle-сцена в цьому сезоні (напр. купальник + «Зима» → у зимовій сцені). Сам товар AI визначає з фото.
           </p>
 
           {/* ── Angle picker ───────────────────────────────────────────── */}

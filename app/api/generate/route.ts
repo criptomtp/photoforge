@@ -196,7 +196,7 @@ export async function POST(request: Request) {
           let lastErr = "";
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-              base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location, imageInstructionsFor(cat, productType));
+              base64Image = await generateImage(apiKey, prompts[i], referenceParts, tier.model, tier.location, imageInstructionsFor(cat, productType, season ? "lifestyle" : "catalog"));
               break;
             } catch (e) {
               lastErr = e instanceof Error ? e.message : String(e);
