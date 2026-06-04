@@ -49,6 +49,8 @@ export default function GeneratePage() {
   // Vertex quota refill — gets to all photos for free on the low trial quota.
   const [autoFill, setAutoFill] = useState<{ active: boolean; done: number; total: number }>({ active: false, done: 0, total: 0 });
   const autoFilledRef = useRef<string>("");
+  const [listing, setListing] = useState<{ title: string; description: string; bullets: string[]; tags: string[] } | null>(null);
+  const [descLoading, setDescLoading] = useState(false);
 
   // Switching category swaps the entire angle set, so reset the picker to the
   // new category's full preset (old angle IDs don't exist in the new set).
@@ -325,6 +327,24 @@ export default function GeneratePage() {
       setAutoFill((a) => ({ ...a, done }));
     }
     setAutoFill({ active: false, done: 0, total: 0 });
+  }
+
+  async function handleDescribe() {
+    setDescLoading(true);
+    setListing(null);
+    try {
+      const fd = new FormData();
+      fd.append("productType", productType);
+      fd.append("name", productType);
+      fd.append("gender", gender);
+      fd.append("season", season);
+      if (images[0]) fd.append("image", images[0]);
+      const res = await fetch("/api/describe", { method: "POST", body: fd });
+      const data = await res.json().catch(() => ({} as { listing?: typeof listing }));
+      if (res.ok && data.listing) setListing(data.listing);
+    } catch { /* ignore */ } finally {
+      setDescLoading(false);
+    }
   }
 
   // When a run finishes with some empty slots, auto-fill them once.
@@ -750,6 +770,49 @@ export default function GeneratePage() {
                     )}
                   </div>
                 ))}
+              </div>
+
+              {/* AI listing */}
+              <div className="border-t border-[#2A2723] pt-4">
+                <button
+                  type="button"
+                  onClick={handleDescribe}
+                  disabled={descLoading || !productType.trim()}
+                  className="text-sm border border-[#2A2723] hover:border-[#E8943A] text-[#F5F0EB] px-4 py-2 rounded-lg transition-colors disabled:opacity-40"
+                >
+                  {descLoading ? "Пишу опис…" : "✍️ Згенерувати AI-опис (заголовок, текст, теги)"}
+                </button>
+                {listing && (
+                  <div className="mt-3 space-y-2 text-sm bg-[#161412] border border-[#2A2723] rounded-lg p-3">
+                    <div>
+                      <p className="text-[10px] text-[#6B6560] uppercase">Заголовок</p>
+                      <p className="text-[#F5F0EB]">{listing.title}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-[#6B6560] uppercase">Опис</p>
+                      <p className="text-[#8B857F] whitespace-pre-wrap leading-snug">{listing.description}</p>
+                    </div>
+                    {listing.bullets?.length > 0 && (
+                      <ul className="list-disc list-inside text-[#8B857F] text-xs space-y-0.5">
+                        {listing.bullets.map((b, i) => <li key={i}>{b}</li>)}
+                      </ul>
+                    )}
+                    {listing.tags?.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {listing.tags.map((t, i) => (
+                          <span key={i} className="text-[10px] bg-[#1E1C19] border border-[#2A2723] text-[#8B857F] px-2 py-0.5 rounded">{t}</span>
+                        ))}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard?.writeText(`${listing.title}\n\n${listing.description}\n\nТеги: ${listing.tags.join(", ")}`)}
+                      className="text-[10px] text-[#6B6560] hover:text-[#E8943A]"
+                    >
+                      📋 Скопіювати все
+                    </button>
+                  </div>
+                )}
               </div>
 
               <button
