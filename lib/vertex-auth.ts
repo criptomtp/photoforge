@@ -28,4 +28,4 @@ export const VERTEX_LOCATION = process.env.GOOGLE_CLOUD_LOCATION ?? "us-central1
 export const VERTEX_PROMPT_MODEL =
   process.env.VERTEX_PROMPT_MODEL ?? "gemini-2.5-flash";
 export const VERTEX_IMAGE_MODEL =
-  process.env.VERTEX_IMAGE_MODEL ?? "gemini-2.0-flash-exp";
+  process.env.VERTEX_IMAGE_MODEL ?? "gemini-2.5-flash-image";
