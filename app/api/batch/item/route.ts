@@ -225,8 +225,9 @@ export async function POST(request: Request) {
         try { imageUrls[i] = await uploadImage(b64, `${user.id}/${generationId}/${i + 1}.jpg`); done++; } catch { /* slot empty */ }
         if (driveToken && driveFolderId) {
           try {
-            const name = `${(angles[i]?.label ?? `angle_${i + 1}`).replace(/[^\wЀ-ӿ]+/g, "_")}.jpg`;
-            const up = await uploadFileToDrive(driveToken, driveFolderId, name, b64);
+            // Match the Make naming: folder = <Артикул>, files = <Артикул>_<номер>.jpg
+            const base = (body.sku || productType || "img").replace(/[^\wЀ-ӿ.\-]+/g, "_").slice(0, 80);
+            const up = await uploadFileToDrive(driveToken, driveFolderId, `${base}_${i + 1}.jpg`, b64);
             driveUrls[i] = up.webViewLink;
           } catch { /* keep storage URL */ }
         }

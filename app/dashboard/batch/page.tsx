@@ -64,6 +64,8 @@ export default function BatchPage() {
   const [phase, setPhase] = useState<"idle" | "running" | "done">("idle");
   const [progress, setProgress] = useState({ done: 0, ok: 0, fail: 0, total: 0, current: "" });
   const [results, setResults] = useState<Record<number, ItemResult>>({});
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [currentIdx, setCurrentIdx] = useState<number | null>(null);
   const abortRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -77,15 +79,30 @@ export default function BatchPage() {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const json = XLSX.utils.sheet_to_json<Row>(ws, { defval: null });
     const hdrs = json.length ? Object.keys(json[0]) : [];
+    const dcols = detectCols(hdrs);
     setRows(json);
-    setCols(detectCols(hdrs));
+    setCols(dcols);
     setPhase("idle");
     setResults({});
+    // Pre-select all rows that have a photo + a product type.
+    const validIdx = json
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => dcols.photos.some((p) => cell(r, p)) && cell(r, dcols.product))
+      .map(({ i }) => i);
+    setSelected(new Set(validIdx));
   }
 
   const validRows = rows
     .map((r, i) => ({ r, i }))
     .filter(({ r }) => cols.photos.some((p) => cell(r, p)) && (cell(r, cols.product) || mode === "descriptions"));
+
+  const allSelected = validRows.length > 0 && validRows.every(({ i }) => selected.has(i));
+  function toggleRow(i: number) {
+    setSelected((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; });
+  }
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(validRows.map(({ i }) => i)));
+  }
 
   function rowSeason(r: Row): string {
     if (bg === "studio") return "";
@@ -97,12 +114,14 @@ export default function BatchPage() {
     abortRef.current = false;
     setPhase("running");
     setResults({});
-    setProgress({ done: 0, ok: 0, fail: 0, total: validRows.length, current: "" });
+    const toRun = validRows.filter(({ i }) => selected.has(i));
+    setProgress({ done: 0, ok: 0, fail: 0, total: toRun.length, current: "" });
     let ok = 0, fail = 0, done = 0;
 
-    for (const { r, i } of validRows) {
+    for (const { r, i } of toRun) {
       if (abortRef.current) break;
       const sku = cell(r, cols.sku) || `row${i + 1}`;
+      setCurrentIdx(i);
       setProgress((p) => ({ ...p, current: sku }));
       const photoUrls = cols.photos.map((p) => cell(r, p)).filter(Boolean);
       const payload = {
@@ -141,6 +160,7 @@ export default function BatchPage() {
       done++;
       setProgress((p) => ({ ...p, done, ok, fail }));
     }
+    setCurrentIdx(null);
     setPhase("done");
   }
 
@@ -206,6 +226,52 @@ export default function BatchPage() {
             {!detected && <p className="text-red-400">⚠️ Не знайдено фото-колонок або колонки товару — перевір заголовки в Excel.</p>}
           </div>
 
+          {/* Selectable products table with live status */}
+          <div className="bg-[#161412] border border-[#2A2723] rounded-xl overflow-hidden">
+            <div className="max-h-[360px] overflow-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-[#1E1C19] text-[#6B6560] z-10">
+                  <tr>
+                    <th className="p-2 w-8"><input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={phase === "running"} className="accent-[#E8943A]" /></th>
+                    <th className="p-2 text-left font-medium">Артикул</th>
+                    <th className="p-2 text-left font-medium">Товар</th>
+                    <th className="p-2 text-left font-medium">Стать</th>
+                    <th className="p-2 text-left font-medium">Сезон</th>
+                    <th className="p-2 text-center font-medium">Фото</th>
+                    <th className="p-2 text-left font-medium">Статус</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {validRows.map(({ r, i }) => {
+                    const res = results[i];
+                    const firstUrl = res?.urls?.find(Boolean);
+                    const status = res
+                      ? (res.error ? `❌ ${res.error}` : `✅ ${res.done ?? ""}/${res.total ?? ""}`)
+                      : (currentIdx === i ? "🔄 генерую…" : selected.has(i) ? "⏳ у черзі" : "—");
+                    return (
+                      <tr key={i} className={`border-t border-[#2A2723] ${currentIdx === i ? "bg-[#E8943A]/10" : ""}`}>
+                        <td className="p-2"><input type="checkbox" checked={selected.has(i)} onChange={() => toggleRow(i)} disabled={phase === "running"} className="accent-[#E8943A]" /></td>
+                        <td className="p-2 text-[#F5F0EB] whitespace-nowrap">{cell(r, cols.sku) || `row${i + 1}`}</td>
+                        <td className="p-2 text-[#8B857F]">{cell(r, cols.product)}</td>
+                        <td className="p-2 text-[#8B857F] whitespace-nowrap">{mapGender(cell(r, cols.gender))}</td>
+                        <td className="p-2 text-[#8B857F] whitespace-nowrap">{cols.season ? cell(r, cols.season) : "—"}</td>
+                        <td className="p-2 text-center text-[#8B857F]">{cols.photos.map((p) => cell(r, p)).filter(Boolean).length}</td>
+                        <td className={`p-2 whitespace-nowrap ${res?.error ? "text-red-400" : currentIdx === i ? "text-[#E8943A]" : "text-[#8B857F]"}`}>
+                          {firstUrl && <a href={firstUrl} target="_blank" rel="noreferrer" className="text-[#E8943A] underline mr-2">переглянути</a>}
+                          {status}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="p-2 text-xs text-[#6B6560] border-t border-[#2A2723] flex justify-between">
+              <span>Обрано <span className="text-[#E8943A]">{validRows.filter(({ i }) => selected.has(i)).length}</span> з {validRows.length}</span>
+              {rows.length > validRows.length && <span>{rows.length - validRows.length} пропущено (немає фото/товару)</span>}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs text-[#6B6560] mb-1">Категорія (для всіх)</label>
@@ -244,9 +310,9 @@ export default function BatchPage() {
             <p className="text-xs text-amber-400/90">⚠️ {validRows.length} товарів — це багато для одного заходу (повільно, тримай вкладку відкритою). Краще ділити на партії до ~300.</p>
           )}
           {phase !== "running" ? (
-            <button onClick={runBatch} disabled={!detected || validRows.length === 0}
+            <button onClick={runBatch} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
               className="w-full bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-3 rounded-xl transition-colors">
-              {phase === "done" ? "Запустити знову" : `Запустити — ${validRows.length} товарів (~${Math.ceil(validRows.length * 45 / 60)} хв)`}
+              {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "Запустити обрані знову" : `Запустити обрані — ${n} (~${Math.ceil(n * 45 / 60)} хв)`; })()}
             </button>
           ) : (
             <div className="space-y-3">
