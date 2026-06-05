@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { CATEGORY_LIST, type CategoryId } from "@/lib/categories";
+import { CATEGORY_LIST, category, type CategoryId } from "@/lib/categories";
 
 type Mode = "images" | "both" | "descriptions";
 type BgChoice = "studio" | "any" | "column";
@@ -58,9 +58,27 @@ export default function BatchPage() {
   const [fileName, setFileName] = useState("");
 
   const [categoryId, setCategoryId] = useState<CategoryId>("clothing");
+  const cat = category(categoryId);
+  const [presetId, setPresetId] = useState<string>("full");
+  const [customAngles, setCustomAngles] = useState<string[]>(category("clothing").presets[0].angles.slice());
   const [mode, setMode] = useState<Mode>("images");
   const [bg, setBg] = useState<BgChoice>("studio");
-  const [drive, setDrive] = useState(false);
+  const [drive, setDrive] = useState(true);
+
+  const isCustomAngles = presetId === "custom";
+  const selectedAngles = isCustomAngles
+    ? customAngles
+    : (cat.presets.find((p) => p.id === presetId)?.angles.slice() ?? cat.presets[0].angles.slice());
+
+  function onCategory(id: CategoryId) {
+    setCategoryId(id);
+    setPresetId("full");
+    setCustomAngles(category(id).presets[0].angles.slice());
+  }
+  function toggleAngle(id: string) {
+    setPresetId("custom");
+    setCustomAngles((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]));
+  }
 
   const [phase, setPhase] = useState<"idle" | "running" | "done">("idle");
   const [progress, setProgress] = useState({ done: 0, ok: 0, fail: 0, total: 0, current: "" });
@@ -139,6 +157,7 @@ export default function BatchPage() {
         composition: cell(r, cols.composition),
         country: cell(r, cols.country),
         photoUrls,
+        angleIds: selectedAngles,
         mode,
         drive,
       };
@@ -309,7 +328,7 @@ export default function BatchPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs text-[#6B6560] mb-1">Категорія (для всіх)</label>
-              <select value={categoryId} onChange={(e) => setCategoryId(e.target.value as CategoryId)} disabled={phase === "running"}
+              <select value={categoryId} onChange={(e) => onCategory(e.target.value as CategoryId)} disabled={phase === "running"}
                 className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-3 py-2 text-sm text-[#F5F0EB]">
                 {CATEGORY_LIST.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
               </select>
@@ -334,10 +353,46 @@ export default function BatchPage() {
             </div>
           </div>
 
+          {/* Angle selection (per batch) */}
           {mode !== "descriptions" && (
-            <label className="flex items-center gap-2 text-sm text-[#8B857F] cursor-pointer">
-              <input type="checkbox" checked={drive} onChange={(e) => setDrive(e.target.checked)} disabled={phase === "running"} className="accent-[#E8943A]" />
-              ☁️ Вивантажити згенеровані фото на мій Google Drive (постійні посилання). Потребує підключеного Google у Налаштуваннях.
+            <div>
+              <label className="block text-xs text-[#6B6560] mb-1">Ракурси <span className="text-[#F5F0EB]">({selectedAngles.length})</span></label>
+              <div className="flex flex-wrap gap-2">
+                {cat.presets.map((p) => (
+                  <button type="button" key={p.id} onClick={() => setPresetId(p.id)} disabled={phase === "running"}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${presetId === p.id ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]" : "bg-[#161412] border-[#2A2723] text-[#6B6560] hover:text-[#F5F0EB]"}`}>
+                    {p.label}
+                  </button>
+                ))}
+                <button type="button" onClick={() => setPresetId("custom")} disabled={phase === "running"}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${isCustomAngles ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]" : "bg-[#161412] border-[#2A2723] text-[#6B6560] hover:text-[#F5F0EB]"}`}>
+                  Обрати вручну…
+                </button>
+              </div>
+              {isCustomAngles && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-[#161412] border border-[#2A2723] rounded-lg p-3 mt-2">
+                  {cat.angles.map((a) => {
+                    const on = customAngles.includes(a.id);
+                    return (
+                      <label key={a.id} className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer ${on ? "bg-[#E8943A]/10" : "hover:bg-[#1E1C19]"}`} title={a.desc}>
+                        <input type="checkbox" checked={on} onChange={() => toggleAngle(a.id)} disabled={phase === "running"} className="mt-1 accent-[#E8943A]" />
+                        <span className={`text-xs ${on ? "text-[#F5F0EB]" : "text-[#6B6560]"}`}>{a.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Google Drive — prominent, on by default */}
+          {mode !== "descriptions" && (
+            <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${drive ? "bg-[#E8943A]/10 border-[#E8943A]/50" : "bg-[#161412] border-[#2A2723]"}`}>
+              <input type="checkbox" checked={drive} onChange={(e) => setDrive(e.target.checked)} disabled={phase === "running"} className="mt-0.5 w-4 h-4 accent-[#E8943A]" />
+              <span className="text-sm">
+                <span className="text-[#F5F0EB] font-medium">☁️ Вивантажити фото на Google Drive</span>
+                <span className="block text-xs text-[#6B6560] mt-0.5">Постійні посилання + папки за артикулом (як у Make). Потребує підключеного Google у Налаштуваннях — без нього підуть звичайні посилання.</span>
+              </span>
             </label>
           )}
           {validRows.length > 300 && phase === "idle" && (
