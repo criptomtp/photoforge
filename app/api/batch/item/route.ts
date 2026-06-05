@@ -9,6 +9,7 @@ import {
 } from "@/lib/tokens";
 import { resolveAngles, qualityTier, refundForRun } from "@/lib/angles";
 import { category } from "@/lib/categories";
+import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
 import { NextResponse } from "next/server";
 import dns from "node:dns/promises";
 import net from "node:net";
@@ -21,6 +22,7 @@ interface BatchItemBody {
   gender?: string; season?: string; composition?: string; country?: string;
   photoUrls?: string[]; angleIds?: string[]; quality?: string;
   mode?: "images" | "descriptions" | "both";
+  drive?: boolean;        // also upload generated images to the user's Google Drive
 }
 
 // ── SSRF defence: resolve DNS + reject private/internal targets, follow
@@ -190,7 +192,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ sku: body.sku, error: clientMsg(e) }, { status: 502 });
   }
 
+  // Optional Google Drive upload (permanent links for the export — storage URLs expire).
+  const driveToken = body.drive ? await getAccessToken(user.id).catch(() => null) : null;
+  let driveFolderId: string | null = null;
+  let driveFolderUrl: string | undefined;
+  if (driveToken) {
+    try {
+      const f = await createDriveFolder(driveToken, (body.sku || productType || "PhotoForge").slice(0, 80));
+      driveFolderId = f.id; driveFolderUrl = f.webViewLink;
+    } catch { /* fall back to storage URLs */ }
+  }
+
   const imageUrls: string[] = new Array(N).fill("");
+  const driveUrls: string[] = new Array(N).fill("");
   let done = 0;
   const CONC = Math.min(N, Number(process.env.IMAGE_CONCURRENCY) || 3);
   const queue = angles.map((_, i) => i);
@@ -209,6 +223,13 @@ export async function POST(request: Request) {
       }
       if (b64) {
         try { imageUrls[i] = await uploadImage(b64, `${user.id}/${generationId}/${i + 1}.jpg`); done++; } catch { /* slot empty */ }
+        if (driveToken && driveFolderId) {
+          try {
+            const name = `${(angles[i]?.label ?? `angle_${i + 1}`).replace(/[^\wЀ-ӿ]+/g, "_")}.jpg`;
+            const up = await uploadFileToDrive(driveToken, driveFolderId, name, b64);
+            driveUrls[i] = up.webViewLink;
+          } catch { /* keep storage URL */ }
+        }
       }
     }
   }));
@@ -233,8 +254,10 @@ export async function POST(request: Request) {
     ...(done === 0 ? { error_message: "all_images_failed" } : {}),
   }).eq("id", generationId);
 
+  // Export prefers permanent Drive links where available, storage URLs otherwise.
+  const finalUrls = imageUrls.map((u, i) => driveUrls[i] || u);
   return NextResponse.json({
-    sku: body.sku, generationId, urls: imageUrls, done, total: N,
-    listing, listingError: listingRes.error,
+    sku: body.sku, generationId, urls: finalUrls, done, total: N,
+    driveFolderUrl, listing, listingError: listingRes.error,
   });
 }

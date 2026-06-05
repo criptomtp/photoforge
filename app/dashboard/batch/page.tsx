@@ -59,6 +59,7 @@ export default function BatchPage() {
   const [categoryId, setCategoryId] = useState<CategoryId>("clothing");
   const [mode, setMode] = useState<Mode>("images");
   const [bg, setBg] = useState<BgChoice>("studio");
+  const [drive, setDrive] = useState(false);
 
   const [phase, setPhase] = useState<"idle" | "running" | "done">("idle");
   const [progress, setProgress] = useState({ done: 0, ok: 0, fail: 0, total: 0, current: "" });
@@ -118,6 +119,7 @@ export default function BatchPage() {
         country: cell(r, cols.country),
         photoUrls,
         mode,
+        drive,
       };
       const ac = new AbortController();
       const to = setTimeout(() => ac.abort(), 75000);
@@ -232,6 +234,12 @@ export default function BatchPage() {
             </div>
           </div>
 
+          {mode !== "descriptions" && (
+            <label className="flex items-center gap-2 text-sm text-[#8B857F] cursor-pointer">
+              <input type="checkbox" checked={drive} onChange={(e) => setDrive(e.target.checked)} disabled={phase === "running"} className="accent-[#E8943A]" />
+              ☁️ Вивантажити згенеровані фото на мій Google Drive (постійні посилання). Потребує підключеного Google у Налаштуваннях.
+            </label>
+          )}
           {validRows.length > 300 && phase === "idle" && (
             <p className="text-xs text-amber-400/90">⚠️ {validRows.length} товарів — це багато для одного заходу (повільно, тримай вкладку відкритою). Краще ділити на партії до ~300.</p>
           )}
