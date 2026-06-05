@@ -53,6 +53,7 @@ const cell = (r: Row, key?: string) => (key && r[key] != null ? String(r[key]).t
 
 export default function BatchPage() {
   const [rows, setRows] = useState<Row[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
   const [cols, setCols] = useState<ColMap>({ photos: [] });
   const [fileName, setFileName] = useState("");
 
@@ -81,6 +82,7 @@ export default function BatchPage() {
     const hdrs = json.length ? Object.keys(json[0]) : [];
     const dcols = detectCols(hdrs);
     setRows(json);
+    setHeaders(hdrs);
     setCols(dcols);
     setPhase("idle");
     setResults({});
@@ -219,11 +221,43 @@ export default function BatchPage() {
 
       {rows.length > 0 && (
         <>
-          <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-4 text-xs text-[#8B857F] space-y-1">
-            <p className="text-[#F5F0EB] text-sm font-medium mb-1">Розпізнано: {rows.length} рядків, {validRows.length} придатних</p>
-            <p>📦 Товар: <span className="text-[#E8943A]">{cols.product ?? "—"}</span> · 👤 Gender: <span className="text-[#E8943A]">{cols.gender ?? "—"}</span> · 🗓 Сезон: <span className="text-[#E8943A]">{cols.season ?? "—"}</span> · 🎨 Колір: <span className="text-[#E8943A]">{cols.color ?? "—"}</span></p>
-            <p>🖼 Фото-колонки ({cols.photos.length}): <span className="text-[#E8943A]">{cols.photos.join(", ") || "не знайдено!"}</span></p>
-            {!detected && <p className="text-red-400">⚠️ Не знайдено фото-колонок або колонки товару — перевір заголовки в Excel.</p>}
+          <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-4 space-y-3">
+            <p className="text-[#F5F0EB] text-sm font-medium">Зіставлення колонок <span className="text-[#6B6560] font-normal text-xs">— виправ вручну, якщо щось визначилось не так</span></p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+              {([["sku", "Артикул"], ["product", "Товар / Вид"], ["gender", "Стать (Gender)"], ["season", "Сезонність"], ["color", "Колір"], ["brand", "Бренд"]] as ["sku" | "product" | "gender" | "season" | "color" | "brand", string][]).map(([key, label]) => (
+                <div key={key}>
+                  <label className="block text-[#6B6560] mb-1">{label}</label>
+                  <select
+                    value={cols[key] ?? ""}
+                    onChange={(e) => setCols((c) => ({ ...c, [key]: e.target.value || undefined }))}
+                    disabled={phase === "running"}
+                    className="w-full bg-[#0C0B0A] border border-[#2A2723] rounded px-2 py-1.5 text-[#F5F0EB] focus:border-[#E8943A] focus:outline-none"
+                  >
+                    <option value="">— не використовувати</option>
+                    {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div>
+              <p className="text-[#6B6560] text-xs mb-1">🖼 Колонки з фото ({cols.photos.length}) — клікни, щоб увімкнути/вимкнути:</p>
+              <div className="flex flex-wrap gap-1.5 max-h-24 overflow-auto">
+                {headers.map((h) => {
+                  const on = cols.photos.includes(h);
+                  return (
+                    <button key={h} type="button" disabled={phase === "running"}
+                      onClick={() => setCols((c) => ({ ...c, photos: on ? c.photos.filter((p) => p !== h) : [...c.photos, h] }))}
+                      className={`text-[10px] px-2 py-1 rounded border transition-colors ${on ? "bg-[#E8943A]/15 border-[#E8943A] text-[#E8943A]" : "bg-[#0C0B0A] border-[#2A2723] text-[#6B6560] hover:text-[#F5F0EB]"}`}>
+                      {h}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <p className="text-xs text-[#6B6560]">
+              Рядків: {rows.length} · придатних: <span className="text-[#F5F0EB]">{validRows.length}</span>
+              {!detected && <span className="text-red-400"> · ⚠️ обери колонку «Товар» і хоча б одну фото-колонку</span>}
+            </p>
           </div>
 
           {/* Selectable products table with live status */}
