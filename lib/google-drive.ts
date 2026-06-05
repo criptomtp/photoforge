@@ -200,6 +200,23 @@ export async function uploadFileToDrive(
   return res.json();
 }
 
+/** Extract the Drive file id from a webViewLink (…/file/d/<id>/view). */
+export function driveFileId(webViewLink?: string | null): string | null {
+  if (!webViewLink) return null;
+  const m = webViewLink.match(/\/d\/([^/?]+)/);
+  return m ? m[1] : null;
+}
+
+/** Best-effort delete of a Drive file by id. */
+export async function deleteDriveFile(accessToken: string, fileId: string): Promise<void> {
+  try {
+    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  } catch { /* ignore */ }
+}
+
 // ── Store tokens in DB after OAuth ───────────────────────────────────────
 
 export async function storeGoogleTokens(

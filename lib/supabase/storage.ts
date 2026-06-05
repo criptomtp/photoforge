@@ -46,3 +46,8 @@ export async function uploadImage(
 
   return data.signedUrl;
 }
+
+/** Best-effort delete of a stored image by path. */
+export async function removeImage(path: string): Promise<void> {
+  try { await supabase.storage.from(BUCKET).remove([path]); } catch { /* ignore */ }
+}

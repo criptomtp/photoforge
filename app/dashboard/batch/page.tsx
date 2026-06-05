@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import Link from "next/link";
 import { CATEGORY_LIST, category, type CategoryId } from "@/lib/categories";
 
 type Mode = "images" | "both" | "descriptions";
@@ -88,6 +89,7 @@ export default function BatchPage() {
   const [resultsBySku, setResultsBySku] = useState<Record<string, ItemResult>>({});
   const [batchTotal, setBatchTotal] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [batchId, setBatchId] = useState<string | null>(null);
   const pollRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -182,6 +184,7 @@ export default function BatchPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.batchId) { setPhase("idle"); alert(data.error || "Не вдалося запустити"); return; }
+      setBatchId(data.batchId);
       pollRef.current = true;
       poll(data.batchId);
     } catch {
@@ -444,9 +447,16 @@ export default function BatchPage() {
           {phase === "done" && (
             <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-4 space-y-3">
               <p className="text-[#F5F0EB] font-medium">✓ {okCount} готово, {failCount} з помилкою</p>
-              <button onClick={exportResults} className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg">
-                ⬇ Експорт Excel (посилання на фото + описи)
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={exportResults} className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg">
+                  ⬇ Експорт Excel (посилання на фото + описи)
+                </button>
+                {batchId && (
+                  <Link href={`/dashboard/history/${batchId}`} className="bg-[#2A2723] hover:bg-[#373330] text-[#F5F0EB] text-sm font-medium px-4 py-2 rounded-lg">
+                    🔍 Перевірити фото (звірити з оригіналами)
+                  </Link>
+                )}
+              </div>
               <p className="text-[10px] text-[#6B6560]">Експорт бере постійні Drive-посилання, якщо Drive увімкнено (інакше — посилання сховища на ~7 днів). Усе також у «Історії».</p>
             </div>
           )}
