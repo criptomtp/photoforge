@@ -13,7 +13,10 @@ interface ColMap {
   size?: string; photos: string[];
 }
 interface Listing { title: string; description: string; bullets: string[]; tags: string[] }
-interface ItemResult { sku?: string; urls?: string[]; done?: number; total?: number; listing?: Listing; listingError?: string; error?: string }
+interface ItemResult {
+  sku?: string; status?: string; done?: number; total?: number;
+  urls?: string[]; driveUrls?: string[]; photoUrls?: string[]; listing?: Listing; error?: string;
+}
 
 const norm = (s: string) => s.toLowerCase().replace(/[\s_.\-]/g, "");
 function detectCols(headers: string[]): ColMap {
@@ -59,8 +62,6 @@ export default function BatchPage() {
 
   const [categoryId, setCategoryId] = useState<CategoryId>("clothing");
   const cat = category(categoryId);
-  // Default to a smaller set in bulk so each product fits Vercel's 60s budget
-  // (8 angles + Drive often 504s). User can switch to the full set.
   const [presetId, setPresetId] = useState<string>("quick3");
   const [customAngles, setCustomAngles] = useState<string[]>(category("clothing").presets[0].angles.slice());
   const [mode, setMode] = useState<Mode>("images");
@@ -84,12 +85,13 @@ export default function BatchPage() {
   }
 
   const [phase, setPhase] = useState<"idle" | "running" | "done">("idle");
-  const [progress, setProgress] = useState({ done: 0, ok: 0, fail: 0, total: 0, current: "" });
-  const [results, setResults] = useState<Record<number, ItemResult>>({});
+  const [resultsBySku, setResultsBySku] = useState<Record<string, ItemResult>>({});
+  const [batchTotal, setBatchTotal] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [currentIdx, setCurrentIdx] = useState<number | null>(null);
-  const abortRef = useRef(false);
+  const pollRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const skuOf = (r: Row, i: number) => cell(r, cols.sku) || `row${i + 1}`;
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -106,8 +108,8 @@ export default function BatchPage() {
     setHeaders(hdrs);
     setCols(dcols);
     setPhase("idle");
-    setResults({});
-    // Pre-select all rows that have a photo + a product type.
+    setResultsBySku({});
+    pollRef.current = false;
     const validIdx = json
       .map((r, i) => ({ r, i }))
       .filter(({ r }) => dcols.photos.some((p) => cell(r, p)) && cell(r, dcols.product))
@@ -133,90 +135,76 @@ export default function BatchPage() {
     return mapSeason(cell(r, cols.season));
   }
 
-  async function runBatch() {
-    abortRef.current = false;
-    setPhase("running");
-    setResults({});
-    const toRun = validRows.filter(({ i }) => selected.has(i));
-    setProgress({ done: 0, ok: 0, fail: 0, total: toRun.length, current: "" });
-    let ok = 0, fail = 0, done = 0;
-
-    // Create one parent Drive folder so product folders nest under it (not scattered).
-    let driveParentId: string | undefined;
-    if (drive && driveFolder.trim()) {
-      try {
-        const res = await fetch("/api/drive/folder", {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: driveFolder.trim() }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.id) driveParentId = data.id;
-      } catch { /* fall back to scattered/storage */ }
-    }
-
-    for (const { r, i } of toRun) {
-      if (abortRef.current) break;
-      const sku = cell(r, cols.sku) || `row${i + 1}`;
-      setCurrentIdx(i);
-      setProgress((p) => ({ ...p, current: sku }));
-      const photoUrls = cols.photos.map((p) => cell(r, p)).filter(Boolean);
-      const payload = {
-        sku,
-        category: categoryId,
-        productType: cell(r, cols.product),
-        name: cell(r, cols.product),
-        brand: cell(r, cols.brand),
-        color: cell(r, cols.color),
-        size: cell(r, cols.size),
-        gender: mapGender(cell(r, cols.gender)),
-        season: rowSeason(r),
-        composition: cell(r, cols.composition),
-        country: cell(r, cols.country),
-        photoUrls,
-        angleIds: selectedAngles,
-        mode,
-        drive,
-        driveParentId,
-      };
-      const ac = new AbortController();
-      const to = setTimeout(() => ac.abort(), 75000);
-      let data: ItemResult;
-      try {
-        const res = await fetch("/api/batch/item", {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: ac.signal,
-        });
-        data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        if (!res.ok && !data.error) data.error = `HTTP ${res.status}`;
-      } catch (e) {
-        data = { error: (e as Error).name === "AbortError" ? "Таймаут (понад 75с)" : (e as Error).message };
-      } finally {
-        clearTimeout(to);
+  async function poll(id: string) {
+    if (!pollRef.current) return;
+    try {
+      const res = await fetch(`/api/batch/${id}/status`);
+      const data = await res.json().catch(() => ({ items: [] }));
+      const map: Record<string, ItemResult> = {};
+      for (const it of (data.items ?? [])) map[it.sku] = it;
+      setResultsBySku(map);
+      const items: ItemResult[] = data.items ?? [];
+      if (items.length > 0 && items.every((it) => it.status === "done" || it.status === "error")) {
+        setPhase("done");
+        pollRef.current = false;
+        return;
       }
-      const success = !data.error && (mode === "descriptions" ? !!data.listing : (data.done ?? 0) > 0);
-      if (success) ok++; else fail++;
-      setResults((prev) => ({ ...prev, [i]: data }));
-      done++;
-      setProgress((p) => ({ ...p, done, ok, fail }));
+    } catch { /* keep polling */ }
+    if (pollRef.current) setTimeout(() => poll(id), 3000);
+  }
+
+  async function startBatch() {
+    const toRun = validRows.filter(({ i }) => selected.has(i));
+    if (toRun.length === 0) return;
+    const products = toRun.map(({ r, i }) => ({
+      sku: skuOf(r, i),
+      productType: cell(r, cols.product),
+      name: cell(r, cols.product),
+      brand: cell(r, cols.brand),
+      color: cell(r, cols.color),
+      size: cell(r, cols.size),
+      gender: mapGender(cell(r, cols.gender)),
+      season: rowSeason(r),
+      composition: cell(r, cols.composition),
+      country: cell(r, cols.country),
+      photoUrls: cols.photos.map((p) => cell(r, p)).filter(Boolean),
+    }));
+    setPhase("running");
+    setResultsBySku({});
+    setBatchTotal(products.length);
+    try {
+      const res = await fetch("/api/batch/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          products, category: categoryId, quality: "standard", mode,
+          angleIds: selectedAngles, drive, driveFolderName: drive ? driveFolder.trim() : "",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.batchId) { setPhase("idle"); alert(data.error || "Не вдалося запустити"); return; }
+      pollRef.current = true;
+      poll(data.batchId);
+    } catch {
+      setPhase("idle");
     }
-    setCurrentIdx(null);
-    setPhase("done");
   }
 
   async function exportResults() {
     const XLSX = await import("xlsx");
-    // Neutralise spreadsheet formula injection in AI text written to cells.
     const safe = (v: string) => (/^[=+\-@\t\r]/.test(v) ? `'${v}` : v);
     const validIdx = new Set(validRows.map(({ i }) => i));
-    const maxImgs = Math.max(1, ...Object.values(results).map((r) => r.urls?.filter(Boolean).length ?? 0));
+    const all = Object.values(resultsBySku);
+    const maxImgs = Math.max(1, ...all.map((r) => Math.max(r.urls?.filter(Boolean).length ?? 0, r.driveUrls?.filter(Boolean).length ?? 0)));
     const out = rows.map((r, i) => {
-      const res = results[i];
+      const res = resultsBySku[skuOf(r, i)];
       const row: Row = { ...r };
       if (res) {
-        const urls = (res.urls ?? []).filter(Boolean);
-        for (let k = 0; k < maxImgs; k++) row[`Згенерована картинка ${k + 1}`] = urls[k] ?? "";
+        for (let k = 0; k < maxImgs; k++) {
+          row[`Згенерована картинка ${k + 1}`] = res.driveUrls?.[k] || res.urls?.[k] || "";
+        }
         row["Статус Генерації"] = res.error
           ? `Помилка: ${res.error}`
-          : (res.total ? `Оброблено (${res.done ?? urls.length}/${res.total})` : (urls.length || res.listing ? "Оброблено" : "Без результату"));
-        if (res.listingError) row["AI_Опис_статус"] = `Помилка: ${res.listingError}`;
+          : (res.status === "done" ? `Оброблено (${res.done}/${res.total})` : res.status ?? "");
         if (res.listing) {
           row["AI_Title"] = safe(res.listing.title);
           row["AI_Опис"] = safe(res.listing.description);
@@ -224,7 +212,7 @@ export default function BatchPage() {
           row["AI_Теги"] = safe(res.listing.tags.join(", "));
         }
       } else {
-        row["Статус Генерації"] = validIdx.has(i) ? "Не оброблено (зупинено)" : "Пропущено (немає фото/типу товару)";
+        row["Статус Генерації"] = validIdx.has(i) ? "Не обрано" : "Пропущено (немає фото/типу товару)";
       }
       return row;
     });
@@ -235,6 +223,18 @@ export default function BatchPage() {
   }
 
   const detected = cols.photos.length > 0 && (!!cols.product || mode === "descriptions");
+  const resList = Object.values(resultsBySku);
+  const okCount = resList.filter((r) => r.status === "done").length;
+  const failCount = resList.filter((r) => r.status === "error").length;
+  const finished = okCount + failCount;
+
+  function statusOf(res: ItemResult | undefined): string {
+    if (!res) return phase === "running" ? "⏳ у черзі" : "—";
+    if (res.status === "done") return `✅ ${res.done}/${res.total}`;
+    if (res.status === "error") return `❌ ${res.error || "помилка"}`;
+    if (res.status === "processing") return `🔄 ${res.done}/${res.total}`;
+    return "⏳ у черзі";
+  }
 
   return (
     <div className="space-y-6">
@@ -242,7 +242,7 @@ export default function BatchPage() {
         <h1 className="font-heading text-3xl font-bold text-[#F5F0EB]">
           Масова генерація <span className="text-[10px] align-middle bg-[#E8943A]/20 text-[#E8943A] px-2 py-0.5 rounded">BETA</span>
         </h1>
-        <p className="text-[#6B6560] mt-1">Завантаж Excel зі своєю вигрузкою (Артикул, Товар, Gender, Сезонність, Фото_1…N) — згенеруємо набір на кожен товар.</p>
+        <p className="text-[#6B6560] mt-1">Завантаж Excel, обери товари — генерація йде у фоні (можна закрити вкладку).</p>
       </div>
 
       <div
@@ -256,18 +256,15 @@ export default function BatchPage() {
 
       {rows.length > 0 && (
         <>
+          {/* Column mapping */}
           <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-4 space-y-3">
             <p className="text-[#F5F0EB] text-sm font-medium">Зіставлення колонок <span className="text-[#6B6560] font-normal text-xs">— виправ вручну, якщо щось визначилось не так</span></p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
               {([["sku", "Артикул"], ["product", "Товар / Вид"], ["gender", "Стать (Gender)"], ["season", "Сезонність"], ["color", "Колір"], ["brand", "Бренд"]] as ["sku" | "product" | "gender" | "season" | "color" | "brand", string][]).map(([key, label]) => (
                 <div key={key}>
                   <label className="block text-[#6B6560] mb-1">{label}</label>
-                  <select
-                    value={cols[key] ?? ""}
-                    onChange={(e) => setCols((c) => ({ ...c, [key]: e.target.value || undefined }))}
-                    disabled={phase === "running"}
-                    className="w-full bg-[#0C0B0A] border border-[#2A2723] rounded px-2 py-1.5 text-[#F5F0EB] focus:border-[#E8943A] focus:outline-none"
-                  >
+                  <select value={cols[key] ?? ""} onChange={(e) => setCols((c) => ({ ...c, [key]: e.target.value || undefined }))} disabled={phase === "running"}
+                    className="w-full bg-[#0C0B0A] border border-[#2A2723] rounded px-2 py-1.5 text-[#F5F0EB] focus:border-[#E8943A] focus:outline-none">
                     <option value="">— не використовувати</option>
                     {headers.map((h) => <option key={h} value={h}>{h}</option>)}
                   </select>
@@ -312,26 +309,24 @@ export default function BatchPage() {
                 </thead>
                 <tbody>
                   {validRows.map(({ r, i }) => {
-                    const res = results[i];
+                    const res = resultsBySku[skuOf(r, i)];
                     const urls = res?.urls?.filter(Boolean) ?? [];
-                    const status = res
-                      ? (res.error ? `❌ ${res.error}` : `✅ ${res.done ?? ""}/${res.total ?? ""}`)
-                      : (currentIdx === i ? "🔄 генерую…" : selected.has(i) ? "⏳ у черзі" : "—");
+                    const active = res?.status === "processing";
                     return (
-                      <tr key={i} className={`border-t border-[#2A2723] ${currentIdx === i ? "bg-[#E8943A]/10" : ""}`}>
+                      <tr key={i} className={`border-t border-[#2A2723] ${active ? "bg-[#E8943A]/10" : ""}`}>
                         <td className="p-2"><input type="checkbox" checked={selected.has(i)} onChange={() => toggleRow(i)} disabled={phase === "running"} className="accent-[#E8943A]" /></td>
-                        <td className="p-2 text-[#F5F0EB] whitespace-nowrap">{cell(r, cols.sku) || `row${i + 1}`}</td>
+                        <td className="p-2 text-[#F5F0EB] whitespace-nowrap">{skuOf(r, i)}</td>
                         <td className="p-2 text-[#8B857F]">{cell(r, cols.product)}</td>
                         <td className="p-2 text-[#8B857F] whitespace-nowrap">{mapGender(cell(r, cols.gender))}</td>
                         <td className="p-2 text-[#8B857F] whitespace-nowrap">{cols.season ? cell(r, cols.season) : "—"}</td>
                         <td className="p-2 text-center text-[#8B857F]">{cols.photos.map((p) => cell(r, p)).filter(Boolean).length}</td>
-                        <td className={`p-2 whitespace-nowrap ${res?.error ? "text-red-400" : currentIdx === i ? "text-[#E8943A]" : "text-[#8B857F]"}`}>
+                        <td className={`p-2 whitespace-nowrap ${res?.error ? "text-red-400" : active ? "text-[#E8943A]" : "text-[#8B857F]"}`}>
                           {urls.length > 0 && (
                             <span className="mr-2">
                               {res!.urls!.map((u, k) => (u ? <a key={k} href={u} target="_blank" rel="noreferrer" className="text-[#E8943A] underline mr-1" title={`фото ${k + 1}`}>{k + 1}</a> : null))}
                             </span>
                           )}
-                          {status}
+                          {statusOf(res)}
                         </td>
                       </tr>
                     );
@@ -345,6 +340,7 @@ export default function BatchPage() {
             </div>
           </div>
 
+          {/* Options */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs text-[#6B6560] mb-1">Категорія (для всіх)</label>
@@ -373,7 +369,7 @@ export default function BatchPage() {
             </div>
           </div>
 
-          {/* Angle selection (per batch) */}
+          {/* Angles */}
           {mode !== "descriptions" && (
             <div>
               <label className="block text-xs text-[#6B6560] mb-1">Ракурси <span className="text-[#F5F0EB]">({selectedAngles.length})</span></label>
@@ -405,13 +401,13 @@ export default function BatchPage() {
             </div>
           )}
 
-          {/* Google Drive — prominent, on by default */}
+          {/* Drive */}
           {mode !== "descriptions" && (
             <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${drive ? "bg-[#E8943A]/10 border-[#E8943A]/50" : "bg-[#161412] border-[#2A2723]"}`}>
               <input type="checkbox" checked={drive} onChange={(e) => setDrive(e.target.checked)} disabled={phase === "running"} className="mt-0.5 w-4 h-4 accent-[#E8943A]" />
               <span className="text-sm">
                 <span className="text-[#F5F0EB] font-medium">☁️ Вивантажити фото на Google Drive</span>
-                <span className="block text-xs text-[#6B6560] mt-0.5">Постійні посилання + папки за артикулом (як у Make). Потребує підключеного Google у Налаштуваннях — без нього підуть звичайні посилання.</span>
+                <span className="block text-xs text-[#6B6560] mt-0.5">Постійні посилання + папки за артикулом (як у Make). Потребує підключеного Google у Налаштуваннях.</span>
               </span>
             </label>
           )}
@@ -423,36 +419,35 @@ export default function BatchPage() {
               <p className="text-[10px] text-[#6B6560] mt-1">Усі товари ляжуть у цю папку, кожен — у підпапку зі своїм артикулом.</p>
             </div>
           )}
-          {validRows.length > 300 && phase === "idle" && (
-            <p className="text-xs text-amber-400/90">⚠️ {validRows.length} товарів — це багато для одного заходу (повільно, тримай вкладку відкритою). Краще ділити на партії до ~300.</p>
-          )}
+
           {phase !== "running" ? (
-            <button onClick={runBatch} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
+            <button onClick={startBatch} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
               className="w-full bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-3 rounded-xl transition-colors">
-              {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "Запустити обрані знову" : `Запустити обрані — ${n} (~${Math.ceil(n * 45 / 60)} хв)`; })()}
+              {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "Запустити обрані знову" : `Запустити обрані — ${n}`; })()}
             </button>
           ) : (
             <div className="space-y-3">
               <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-4">
                 <div className="flex justify-between text-sm mb-2">
-                  <span className="text-[#F5F0EB]">Обробляю: <span className="text-[#E8943A]">{progress.current}</span></span>
-                  <span className="text-[#6B6560]">{progress.done}/{progress.total} · ✓{progress.ok} ✗{progress.fail}</span>
+                  <span className="text-[#F5F0EB]">Генерую у фоні…</span>
+                  <span className="text-[#6B6560]">{finished}/{batchTotal} · ✓{okCount} ✗{failCount}</span>
                 </div>
                 <div className="w-full bg-[#2A2723] rounded-full h-1.5">
-                  <div className="bg-[#E8943A] h-1.5 rounded-full transition-all" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} />
+                  <div className="bg-[#E8943A] h-1.5 rounded-full transition-all" style={{ width: `${batchTotal ? (finished / batchTotal) * 100 : 0}%` }} />
                 </div>
+                <p className="text-[10px] text-[#6B6560] mt-2">✅ Можна закрити вкладку — генерація триває на сервері. Результати з'являться тут і в «Історії».</p>
               </div>
-              <button onClick={() => { abortRef.current = true; }} className="text-xs text-[#6B6560] hover:text-red-400">Зупинити після поточного</button>
+              <button onClick={() => { pollRef.current = false; setPhase("done"); }} className="text-xs text-[#6B6560] hover:text-[#F5F0EB]">Сховати прогрес (генерація продовжиться у фоні)</button>
             </div>
           )}
 
           {phase === "done" && (
             <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-4 space-y-3">
-              <p className="text-[#F5F0EB] font-medium">✓ Готово: {progress.ok} успішно, {progress.fail} з помилкою</p>
+              <p className="text-[#F5F0EB] font-medium">✓ {okCount} готово, {failCount} з помилкою</p>
               <button onClick={exportResults} className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg">
-                ⬇ Експорт Excel (посилання на згенеровані фото + описи)
+                ⬇ Експорт Excel (посилання на фото + описи)
               </button>
-              <p className="text-[10px] text-[#6B6560]">Усі згенеровані набори також доступні в розділі «Історія». ⚠️ Посилання на фото в Excel дійсні ~7 днів — завантаж файли скоро (Drive-вивантаження зробимо за потреби).</p>
+              <p className="text-[10px] text-[#6B6560]">Експорт бере постійні Drive-посилання, якщо Drive увімкнено (інакше — посилання сховища на ~7 днів). Усе також у «Історії».</p>
             </div>
           )}
         </>
