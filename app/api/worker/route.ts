@@ -13,6 +13,7 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 60; // Vercel Hobby cap — the worker stays well under it
 const BUDGET_MS = 45_000;      // stop starting new images past this; finish + re-trigger
+const MAX_PASSES = 5;          // bound retries of failed/untried slots across passes
 
 interface JobParams {
   userEmail?: string; category?: string; productType?: string; name?: string;
@@ -26,6 +27,7 @@ interface GenRow {
   prompts: string[] | null; image_urls: string[] | null; drive_urls: string[] | null;
   drive_folder_id: string | null; listing: unknown;
   claimed_at: string | null; // ownership token — claim_generation sets it to now()
+  passes: number | null;     // how many worker passes this job has had
 }
 
 function urlsOfLength(arr: unknown, n: number): string[] {
@@ -40,7 +42,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: 2 });
+  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: 3, p_max_passes: 5 });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
   if (!g) return NextResponse.json({ idle: true });
 
@@ -56,7 +58,7 @@ export async function POST(request: Request) {
   }
 
   const { data: more } = await supabaseAdmin.rpc("queue_has_work");
-  if (more === true) await kickWorker(2); // awaited so the spawn isn't dropped on freeze
+  if (more === true) await kickWorker(3); // refill up to the lane cap (extras return idle)
   return NextResponse.json({ ok: true, id: g.id });
 }
 
@@ -105,17 +107,18 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     }
   }
 
-  let budgetHit = false;
   for (let i = 0; i < N; i++) {
     if (imageUrls[i]) continue;
-    if (Date.now() - t0 > BUDGET_MS) { budgetHit = true; break; }
+    if (Date.now() - t0 > BUDGET_MS) break; // out of time → remaining slots go to next pass
     let b64: string | null = null;
-    for (let a = 1; a <= 2; a++) {
+    for (let a = 1; a <= 3; a++) {
       try {
         b64 = await generateImage(apiKey, prompts[i], refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
         break;
       } catch (e) {
-        if (a < 2) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(String(e)) ? 3500 : 600));
+        // 429 = free (Vertex rejects before generating) — back off and retry.
+        const is429 = /\b429\b|RESOURCE_EXHAUSTED/i.test(String(e));
+        if (a < 3) await new Promise((r) => setTimeout(r, is429 ? 2500 * a : 600));
       }
     }
     if (b64) {
@@ -144,15 +147,27 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
           saved = true;
         } catch { if (s === 0) await new Promise((r) => setTimeout(r, 400)); }
       }
-      if (!saved) { imageUrls[i] = ""; driveUrls[i] = ""; } // count as failed → refunded
+      if (!saved) {
+        // Fallback: persist the whole local array (safe — lane cap + claim mean
+        // we're the only worker on this row) so a generated+uploaded image is NOT
+        // lost and re-generated (paid) next pass.
+        try {
+          await supabaseAdmin.from("generations")
+            .update({ image_urls: imageUrls, drive_urls: driveUrls, images_generated: imageUrls.filter(Boolean).length })
+            .eq("id", g.id).eq("claimed_at", g.claimed_at);
+        } catch { imageUrls[i] = ""; driveUrls[i] = ""; } // truly unpersistable → count as failed
+      }
     }
   }
 
+  // g.passes is this pass's number (claim_generation incremented it atomically).
   const remaining = imageUrls.filter((u) => !u).length;
-  if (budgetHit && remaining > 0) {
-    // More images to do → hand off cleanly via the queue. Ownership-guarded so a
-    // hung worker that lost its row to a stale-reclaim can't requeue the new
-    // owner's live job. (Backdating to 'processing' used to cause mid-pass overlap.)
+  if (remaining > 0 && (g.passes ?? 1) < MAX_PASSES) {
+    // Slots still to do — either untried (budget ran out) or failed and worth a
+    // retry (a 429 is usually transient and FREE). Hand off via the queue for a
+    // fresh budget + lower quota pressure. Ownership-guarded so a stale-reclaimed
+    // worker can't requeue the new owner's live job. MAX_PASSES (enforced at claim
+    // time) bounds a persistently-failing slot so it can't loop forever.
     await supabaseAdmin.from("generations")
       .update({ status: "queued", claimed_at: null })
       .eq("id", g.id).eq("status", "processing").eq("claimed_at", g.claimed_at);
