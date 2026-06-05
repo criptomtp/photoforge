@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { resolveApiKey, chargeTokens } from "@/lib/tokens";
+import { resolveApiKey, chargeTokens, creditTokens } from "@/lib/tokens";
 import { generateImage, imageInstructionsFor, type GeminiImagePart } from "@/lib/gemini";
 import { uploadImage, removeImage } from "@/lib/supabase/storage";
-import { qualityTier, TOKEN_COSTS } from "@/lib/angles";
+import { resolveAngles, qualityTier, TOKEN_COSTS } from "@/lib/angles";
 import { category } from "@/lib/categories";
 import { getAccessToken, uploadFileToDrive, deleteDriveFile, driveFileId } from "@/lib/google-drive";
 import { fetchImageAsPart } from "@/lib/safe-image-fetch";
@@ -13,11 +13,13 @@ export const maxDuration = 60;
 
 interface JobParams {
   category?: string; productType?: string; name?: string; gender?: string; season?: string;
-  photoUrls?: string[]; quality?: string; sku?: string; drive?: boolean;
+  photoUrls?: string[]; angleIds?: string[]; quality?: string; sku?: string; drive?: boolean;
 }
 
 // Single-photo QA actions: "regen" (replace a slot with a fresh image) or
-// "delete" (remove a slot). Both purge the matching Google Drive file.
+// "delete" (remove a slot). Both purge the matching Google Drive file. The slot
+// write goes through the qa_set_slot RPC (FOR UPDATE) so concurrent actions on
+// the same generation can't clobber each other's arrays.
 export async function POST(request: Request) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -32,30 +34,28 @@ export async function POST(request: Request) {
 
   const { data: g } = await supabaseAdmin
     .from("generations")
-    .select("id, user_id, params, prompts, image_urls, drive_urls, drive_folder_id")
+    .select("id, user_id, params, prompts, drive_urls, drive_folder_id")
     .eq("id", generationId).single();
   if (!g || g.user_id !== user.id) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const p: JobParams = (g.params as JobParams) ?? {};
-  const imageUrls = Array.isArray(g.image_urls) ? [...(g.image_urls as string[])] : [];
-  const driveUrls = Array.isArray(g.drive_urls) ? [...(g.drive_urls as string[])] : [];
+  const cat = category(p.category);
+  const N = (p.angleIds?.length) ? resolveAngles(p.angleIds, cat.angles).length : cat.angles.length;
+  if (index >= N) return NextResponse.json({ error: "index out of range" }, { status: 400 });
+
+  const driveUrls = Array.isArray(g.drive_urls) ? (g.drive_urls as string[]) : [];
   const prompts = Array.isArray(g.prompts) ? (g.prompts as string[]) : [];
   const path = `${g.user_id}/${g.id}/${index + 1}.jpg`;
-
-  // Purge the old Drive file for this slot (both actions replace/remove it).
-  let driveToken: string | null = null;
   const oldDriveId = driveFileId(driveUrls[index]);
-  if (oldDriveId || (action === "regen" && p.drive)) driveToken = await getAccessToken(user.id).catch(() => null);
-  if (driveToken && oldDriveId) await deleteDriveFile(driveToken, oldDriveId);
 
+  // ── delete ───────────────────────────────────────────────────────────────
   if (action === "delete") {
+    if (oldDriveId) {
+      const token = await getAccessToken(user.id).catch(() => null);
+      if (token) await deleteDriveFile(token, oldDriveId);
+    }
     await removeImage(path);
-    imageUrls[index] = "";
-    driveUrls[index] = "";
-    await supabaseAdmin.from("generations").update({
-      image_urls: imageUrls, drive_urls: driveUrls,
-      images_generated: imageUrls.filter(Boolean).length,
-    }).eq("id", generationId);
+    await supabaseAdmin.rpc("qa_set_slot", { p_gen_id: g.id, p_index: index, p_image_url: "", p_drive_url: "" });
     return NextResponse.json({ ok: true, action: "delete", index });
   }
 
@@ -66,15 +66,21 @@ export async function POST(request: Request) {
   const { apiKey, admin, byok } = ctx;
   const metered = !admin && !byok;
 
-  const cat = category(p.category);
   const productType = (p.productType || p.name || "").trim();
   const season = p.season ?? "";
   const bg = season ? "lifestyle" : "catalog";
   const tier = qualityTier(p.quality);
+  const cost = TOKEN_COSTS.image_gen * tier.tokenMultiplier;
 
   const refs = (await Promise.all((p.photoUrls ?? []).slice(0, 3).map(fetchImageAsPart)))
     .filter((x): x is GeminiImagePart => !!x);
   if (refs.length === 0) return NextResponse.json({ error: "Немає референсних фото" }, { status: 422 });
+
+  // Charge BEFORE the paid generation (rejects an underfunded user up-front).
+  if (metered) {
+    try { await chargeTokens(user.id, cost, "image_gen", "Перегенерація фото (QA)"); }
+    catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 402 }); }
+  }
 
   const prompt = prompts[index] || `Professional product photo, angle ${index + 1}.`;
   let b64: string | null = null;
@@ -86,27 +92,35 @@ export async function POST(request: Request) {
       if (a < 2) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(String(e)) ? 3500 : 600));
     }
   }
-  if (!b64) return NextResponse.json({ error: "Генерація не вдалась, спробуйте ще раз" }, { status: 502 });
-
-  // Charge metered users one image only on success (admin/BYOK free).
-  if (metered) {
-    try { await chargeTokens(user.id, TOKEN_COSTS.image_gen * tier.tokenMultiplier, "image_gen", "Перегенерація фото (QA)"); }
-    catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 402 }); }
+  if (!b64) {
+    if (metered) await creditTokens(user.id, cost, "refund", "Повернення: перегенерація не вдалась").catch(() => {});
+    return NextResponse.json({ error: "Генерація не вдалась, спробуйте ще раз" }, { status: 502 });
   }
 
-  imageUrls[index] = await uploadImage(b64, path);
-  driveUrls[index] = "";
-  if (driveToken && g.drive_folder_id) {
-    try {
-      const base = (p.sku || productType || "img").replace(/[^\wЀ-ӿ.\-]+/g, "_").slice(0, 80);
-      const up = await uploadFileToDrive(driveToken, g.drive_folder_id, `${base}_${index + 1}.jpg`, b64);
-      driveUrls[index] = up.webViewLink;
-    } catch { /* keep storage URL */ }
+  // Store first; only then swap the Drive file (so a failed regen never destroys
+  // the previous Drive copy).
+  let newUrl: string;
+  try { newUrl = await uploadImage(b64, path); }
+  catch {
+    if (metered) await creditTokens(user.id, cost, "refund", "Повернення: збій збереження").catch(() => {});
+    return NextResponse.json({ error: "Збій збереження" }, { status: 502 });
   }
-  await supabaseAdmin.from("generations").update({
-    image_urls: imageUrls, drive_urls: driveUrls,
-    images_generated: imageUrls.filter(Boolean).length,
-  }).eq("id", generationId);
 
-  return NextResponse.json({ ok: true, action: "regen", index, url: imageUrls[index], driveUrl: driveUrls[index] });
+  let newDriveUrl = "";
+  if (p.drive || oldDriveId) {
+    const token = await getAccessToken(user.id).catch(() => null);
+    if (token) {
+      if (oldDriveId) await deleteDriveFile(token, oldDriveId);
+      if (g.drive_folder_id) {
+        try {
+          const base = (p.sku || productType || "img").replace(/[^\wЀ-ӿ.\-]+/g, "_").slice(0, 80);
+          const up = await uploadFileToDrive(token, g.drive_folder_id, `${base}_${index + 1}.jpg`, b64);
+          newDriveUrl = up.webViewLink;
+        } catch { /* keep storage URL */ }
+      }
+    }
+  }
+
+  await supabaseAdmin.rpc("qa_set_slot", { p_gen_id: g.id, p_index: index, p_image_url: newUrl, p_drive_url: newDriveUrl });
+  return NextResponse.json({ ok: true, action: "regen", index, url: newUrl, driveUrl: newDriveUrl });
 }

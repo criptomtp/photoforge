@@ -204,7 +204,8 @@ export async function uploadFileToDrive(
 export function driveFileId(webViewLink?: string | null): string | null {
   if (!webViewLink) return null;
   const m = webViewLink.match(/\/d\/([^/?]+)/);
-  return m ? m[1] : null;
+  // Sanity-check it looks like a Drive id (avoids deleting on a malformed link).
+  return m && /^[-\w]{10,}$/.test(m[1]) ? m[1] : null;
 }
 
 /** Best-effort delete of a Drive file by id. */
