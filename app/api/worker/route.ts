@@ -25,6 +25,7 @@ interface GenRow {
   id: string; user_id: string; params: JobParams | null;
   prompts: string[] | null; image_urls: string[] | null; drive_urls: string[] | null;
   drive_folder_id: string | null; listing: unknown;
+  claimed_at: string | null; // ownership token — claim_generation sets it to now()
 }
 
 function urlsOfLength(arr: unknown, n: number): string[] {
@@ -39,7 +40,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const { data: claimed } = await supabaseAdmin.rpc("claim_generation");
+  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: 2 });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
   if (!g) return NextResponse.json({ idle: true });
 
@@ -47,9 +48,11 @@ export async function POST(request: Request) {
   try {
     await processJob(g, t0);
   } catch (e) {
+    // Ownership-guarded: only mark error if WE still hold the claim (a hung
+    // worker that lost its row to a stale-reclaim must not stomp the new owner).
     await supabaseAdmin.from("generations")
       .update({ status: "error", error_message: String((e as Error).message).slice(0, 200) })
-      .eq("id", g.id);
+      .eq("id", g.id).eq("status", "processing").eq("claimed_at", g.claimed_at);
   }
 
   const { data: more } = await supabaseAdmin.rpc("queue_has_work");
@@ -127,17 +130,32 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
         }
       } catch { /* slot empty */ }
     }
-    await supabaseAdmin.from("generations")
-      .update({ image_urls: imageUrls, drive_urls: driveUrls, images_generated: imageUrls.filter(Boolean).length })
-      .eq("id", g.id);
+    // Atomic per-slot write (FOR UPDATE + recomputes images_generated). A full-
+    // array overwrite here was the "floating count" bug: a second worker on the
+    // same job would clobber slots it didn't know about. A throw here must NOT
+    // abort the job (that would skip the refund) — retry once, else drop the slot.
+    if (imageUrls[i]) {
+      let saved = false;
+      for (let s = 0; s < 2 && !saved; s++) {
+        try {
+          await supabaseAdmin.rpc("qa_set_slot", {
+            p_gen_id: g.id, p_index: i, p_image_url: imageUrls[i], p_drive_url: driveUrls[i] || "",
+          });
+          saved = true;
+        } catch { if (s === 0) await new Promise((r) => setTimeout(r, 400)); }
+      }
+      if (!saved) { imageUrls[i] = ""; driveUrls[i] = ""; } // count as failed → refunded
+    }
   }
 
   const remaining = imageUrls.filter((u) => !u).length;
   if (budgetHit && remaining > 0) {
-    // More images to do — make it immediately re-claimable for the next pass.
+    // More images to do → hand off cleanly via the queue. Ownership-guarded so a
+    // hung worker that lost its row to a stale-reclaim can't requeue the new
+    // owner's live job. (Backdating to 'processing' used to cause mid-pass overlap.)
     await supabaseAdmin.from("generations")
-      .update({ status: "processing", claimed_at: new Date(Date.now() - 60_000).toISOString() })
-      .eq("id", g.id);
+      .update({ status: "queued", claimed_at: null })
+      .eq("id", g.id).eq("status", "processing").eq("claimed_at", g.claimed_at);
     return;
   }
 
@@ -152,19 +170,21 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
       }, refs[0]);
     } catch { /* non-fatal */ }
   }
+
+  // Atomically take ownership of finalization. If 0 rows match, another worker
+  // already finalized this job (hang/stale-reclaim path) → we must NOT run the
+  // token/counter side-effects again (double refund / double increment).
+  const { data: finalized } = await supabaseAdmin.from("generations").update({
+    status: done > 0 ? "done" : "error",
+    ...(listing ? { listing } : {}),
+    ...(done === 0 ? { error_message: "all_images_failed" } : {}),
+  }).eq("id", g.id).eq("status", "processing").eq("claimed_at", g.claimed_at).select("id");
+  if (!finalized || finalized.length === 0) return; // lost the claim — no side-effects
+
   if (metered && !freeQuota) {
     const refund = refundForRun(N, done, tier.tokenMultiplier);
     if (refund > 0) await refundTokens(g.user_id, g.id, refund, `Повернення за ${N - done} невдалих`).catch(() => {});
   }
   if (freeQuota && done === 0) await restoreFreeGeneration(g.user_id);
   if (!freeQuota && !admin && done > 0) await supabaseAdmin.rpc("increment_generations_used", { p_user_id: g.user_id });
-
-  await supabaseAdmin.from("generations").update({
-    status: done > 0 ? "done" : "error",
-    images_generated: done,
-    image_urls: imageUrls,
-    drive_urls: driveUrls,
-    ...(listing ? { listing } : {}),
-    ...(done === 0 ? { error_message: "all_images_failed" } : {}),
-  }).eq("id", g.id);
 }
