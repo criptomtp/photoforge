@@ -13,7 +13,7 @@ interface ColMap {
   size?: string; photos: string[];
 }
 interface Listing { title: string; description: string; bullets: string[]; tags: string[] }
-interface ItemResult { sku?: string; urls?: string[]; done?: number; total?: number; listing?: Listing; error?: string }
+interface ItemResult { sku?: string; urls?: string[]; done?: number; total?: number; listing?: Listing; listingError?: string; error?: string }
 
 const norm = (s: string) => s.toLowerCase().replace(/[\s_.\-]/g, "");
 function detectCols(headers: string[]): ColMap {
@@ -119,18 +119,23 @@ export default function BatchPage() {
         photoUrls,
         mode,
       };
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), 75000);
+      let data: ItemResult;
       try {
         const res = await fetch("/api/batch/item", {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: ac.signal,
         });
-        const data: ItemResult = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        const success = res.ok && !data.error && (mode === "descriptions" ? !!data.listing : (data.done ?? 0) > 0);
-        if (success) ok++; else fail++;
-        setResults((prev) => ({ ...prev, [i]: data }));
+        data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        if (!res.ok && !data.error) data.error = `HTTP ${res.status}`;
       } catch (e) {
-        fail++;
-        setResults((prev) => ({ ...prev, [i]: { error: (e as Error).message } }));
+        data = { error: (e as Error).name === "AbortError" ? "Таймаут (понад 75с)" : (e as Error).message };
+      } finally {
+        clearTimeout(to);
       }
+      const success = !data.error && (mode === "descriptions" ? !!data.listing : (data.done ?? 0) > 0);
+      if (success) ok++; else fail++;
+      setResults((prev) => ({ ...prev, [i]: data }));
       done++;
       setProgress((p) => ({ ...p, done, ok, fail }));
     }
@@ -139,6 +144,9 @@ export default function BatchPage() {
 
   async function exportResults() {
     const XLSX = await import("xlsx");
+    // Neutralise spreadsheet formula injection in AI text written to cells.
+    const safe = (v: string) => (/^[=+\-@\t\r]/.test(v) ? `'${v}` : v);
+    const validIdx = new Set(validRows.map(({ i }) => i));
     const maxImgs = Math.max(1, ...Object.values(results).map((r) => r.urls?.filter(Boolean).length ?? 0));
     const out = rows.map((r, i) => {
       const res = results[i];
@@ -146,12 +154,18 @@ export default function BatchPage() {
       if (res) {
         const urls = (res.urls ?? []).filter(Boolean);
         for (let k = 0; k < maxImgs; k++) row[`Згенерована картинка ${k + 1}`] = urls[k] ?? "";
-        row["Статус Генерації"] = res.error ? `Помилка: ${res.error}` : (urls.length || res.listing ? "Оброблено" : "Без результату");
+        row["Статус Генерації"] = res.error
+          ? `Помилка: ${res.error}`
+          : (res.total ? `Оброблено (${res.done ?? urls.length}/${res.total})` : (urls.length || res.listing ? "Оброблено" : "Без результату"));
+        if (res.listingError) row["AI_Опис_статус"] = `Помилка: ${res.listingError}`;
         if (res.listing) {
-          row["AI_Title"] = res.listing.title;
-          row["AI_Опис"] = res.listing.description;
-          row["AI_Теги"] = res.listing.tags.join(", ");
+          row["AI_Title"] = safe(res.listing.title);
+          row["AI_Опис"] = safe(res.listing.description);
+          row["AI_Переваги"] = safe(res.listing.bullets.join("\n"));
+          row["AI_Теги"] = safe(res.listing.tags.join(", "));
         }
+      } else {
+        row["Статус Генерації"] = validIdx.has(i) ? "Не оброблено (зупинено)" : "Пропущено (немає фото/типу товару)";
       }
       return row;
     });
@@ -218,10 +232,13 @@ export default function BatchPage() {
             </div>
           </div>
 
+          {validRows.length > 300 && phase === "idle" && (
+            <p className="text-xs text-amber-400/90">⚠️ {validRows.length} товарів — це багато для одного заходу (повільно, тримай вкладку відкритою). Краще ділити на партії до ~300.</p>
+          )}
           {phase !== "running" ? (
             <button onClick={runBatch} disabled={!detected || validRows.length === 0}
               className="w-full bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-3 rounded-xl transition-colors">
-              {phase === "done" ? "Запустити знову" : `Запустити — ${validRows.length} товарів`}
+              {phase === "done" ? "Запустити знову" : `Запустити — ${validRows.length} товарів (~${Math.ceil(validRows.length * 45 / 60)} хв)`}
             </button>
           ) : (
             <div className="space-y-3">
@@ -244,7 +261,7 @@ export default function BatchPage() {
               <button onClick={exportResults} className="bg-[#E8943A] hover:bg-[#D4832B] text-[#0C0B0A] text-sm font-medium px-4 py-2 rounded-lg">
                 ⬇ Експорт Excel (посилання на згенеровані фото + описи)
               </button>
-              <p className="text-[10px] text-[#6B6560]">Усі згенеровані набори також доступні в розділі «Історія».</p>
+              <p className="text-[10px] text-[#6B6560]">Усі згенеровані набори також доступні в розділі «Історія». ⚠️ Посилання на фото в Excel дійсні ~7 днів — завантаж файли скоро (Drive-вивантаження зробимо за потреби).</p>
             </div>
           )}
         </>

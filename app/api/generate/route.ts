@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { generatePrompts, generateImage, imageInstructionsFor, type GeminiImagePart } from "@/lib/gemini";
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
-import { resolveApiKey, reserveTokens, refundTokens } from "@/lib/tokens";
+import { resolveApiKey, reserveTokens, refundTokens, restoreFreeGeneration } from "@/lib/tokens";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
 import { resolveAngles, costForAngles, refundForRun, netCostForRun, qualityTier } from "@/lib/angles";
 import { category } from "@/lib/categories";
@@ -170,7 +170,20 @@ export async function POST(request: Request) {
         const provider = byok ? "AI Studio (BYOK)" : apiKey === null ? "Vertex AI" : "AI Studio";
         send({ type: "status", message: `${provider}: генерую промпти...` });
 
-        const prompts = await generatePrompts(apiKey, cat, productType, season, gender, referenceParts, angles);
+        let prompts: string[];
+        try {
+          prompts = await generatePrompts(apiKey, cat, productType, season, gender, referenceParts, angles);
+        } catch (promptErr) {
+          // Reserved tokens must be returned if prompt generation fails before any image.
+          if (!byok && !freeQuota && !admin) {
+            await refundTokens(user.id, generationId, refundForRun(N, 0, tier.tokenMultiplier), "Повернення: помилка генерації промптів").catch(() => {});
+          }
+          if (freeQuota) await restoreFreeGeneration(user.id);
+          await supabase.from("generations").update({ status: "error", error_message: "prompt_failed" }).eq("id", generationId);
+          send({ type: "error", message: promptErr instanceof Error ? promptErr.message : "Помилка генерації промптів" });
+          controller.close();
+          return;
+        }
         // Send the prompts NOW (not only in "done") so they show immediately and
         // survive even if image generation is slow or the request is cut short.
         send({ type: "prompts_ready", count: prompts.length, prompts, generationId });
@@ -299,6 +312,8 @@ export async function POST(request: Request) {
           }
           cost = netCostForRun(N, imagesGenerated, tier.tokenMultiplier);
         }
+        // Free run that produced nothing → give the monthly slot back.
+        if (freeQuota && imagesGenerated === 0) await restoreFreeGeneration(user.id);
 
         // ── 10. Finalise DB ────────────────────────────────────────────────
         await supabase

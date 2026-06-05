@@ -151,6 +151,31 @@ export async function reserveTokens(
 }
 
 /**
+ * Charges a fixed token amount atomically (rejects on insufficient balance).
+ * Used for cheap auxiliary AI calls like listing generation.
+ */
+export async function chargeTokens(
+  userId: string,
+  amount: number,
+  kind: string,
+  description: string
+): Promise<void> {
+  const { error } = await supabaseAdmin.rpc("deduct_tokens_tx", {
+    p_user_id: userId,
+    p_amount: amount,
+    p_kind: kind,
+    p_description: description,
+    p_generation_id: null,
+  });
+  if (error) throw new Error(`Token charge failed: ${error.message}`);
+}
+
+/** Gives back a free-quota slot consumed up-front when a run produced nothing. */
+export async function restoreFreeGeneration(userId: string): Promise<void> {
+  try { await supabaseAdmin.rpc("restore_free_generation", { p_user_id: userId }); } catch { /* best effort */ }
+}
+
+/**
  * Refunds part (or all) of a previously reserved run when some/all images fail.
  */
 export async function refundTokens(
