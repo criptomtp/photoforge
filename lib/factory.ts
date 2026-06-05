@@ -1,14 +1,19 @@
-// Fire-and-forget trigger for the background generation worker. Server-to-server
-// (carries WORKER_SECRET), so it can be called from API routes and the worker's
-// own self-re-trigger. Never awaited — it just spawns independent invocations.
-export function kickWorker(times = 1): void {
+// Trigger background worker invocations. On Vercel a bare fire-and-forget fetch is
+// DROPPED when the handler returns (the instance freezes), which silently breaks
+// the chain. So we AWAIT each kick but with a short timeout: long enough to
+// deliver the request (which spawns an independent worker invocation), short
+// enough not to wait for that worker's full run. MUST be awaited by callers.
+export async function kickWorker(times = 1): Promise<void> {
   const base = process.env.NEXT_PUBLIC_APP_URL;
   const secret = process.env.WORKER_SECRET;
   if (!base || !secret) return;
-  for (let i = 0; i < times; i++) {
-    fetch(`${base}/api/worker`, {
-      method: "POST",
-      headers: { "x-worker-secret": secret },
-    }).catch(() => {});
-  }
+  await Promise.all(
+    Array.from({ length: times }, () =>
+      fetch(`${base}/api/worker`, {
+        method: "POST",
+        headers: { "x-worker-secret": secret },
+        signal: AbortSignal.timeout(2500),
+      }).catch(() => {})
+    )
+  );
 }

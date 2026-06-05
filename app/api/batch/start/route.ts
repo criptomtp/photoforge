@@ -85,6 +85,6 @@ export async function POST(request: Request) {
     }
   }
 
-  kickWorker(3);
+  await kickWorker(3); // awaited so the spawn isn't dropped when this handler returns
   return NextResponse.json({ batchId, queued, total: products.length });
 }

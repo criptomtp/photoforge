@@ -53,7 +53,7 @@ export async function POST(request: Request) {
   }
 
   const { data: more } = await supabaseAdmin.rpc("queue_has_work");
-  if (more === true) kickWorker(2);
+  if (more === true) await kickWorker(2); // awaited so the spawn isn't dropped on freeze
   return NextResponse.json({ ok: true, id: g.id });
 }
 

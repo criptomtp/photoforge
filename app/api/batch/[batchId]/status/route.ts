@@ -40,7 +40,7 @@ export async function GET(
   });
 
   // Keep the queue draining while the client polls (belt to the self-re-trigger).
-  if (items.some((i) => i.status === "queued" || i.status === "processing")) kickWorker(1);
+  if (items.some((i) => i.status === "queued" || i.status === "processing")) await kickWorker(1);
 
   return NextResponse.json({ items });
 }
