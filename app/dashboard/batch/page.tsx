@@ -59,11 +59,14 @@ export default function BatchPage() {
 
   const [categoryId, setCategoryId] = useState<CategoryId>("clothing");
   const cat = category(categoryId);
-  const [presetId, setPresetId] = useState<string>("full");
+  // Default to a smaller set in bulk so each product fits Vercel's 60s budget
+  // (8 angles + Drive often 504s). User can switch to the full set.
+  const [presetId, setPresetId] = useState<string>("quick3");
   const [customAngles, setCustomAngles] = useState<string[]>(category("clothing").presets[0].angles.slice());
   const [mode, setMode] = useState<Mode>("images");
   const [bg, setBg] = useState<BgChoice>("studio");
   const [drive, setDrive] = useState(true);
+  const [driveFolder, setDriveFolder] = useState("PhotoForge");
 
   const isCustomAngles = presetId === "custom";
   const selectedAngles = isCustomAngles
@@ -72,7 +75,7 @@ export default function BatchPage() {
 
   function onCategory(id: CategoryId) {
     setCategoryId(id);
-    setPresetId("full");
+    setPresetId("quick3");
     setCustomAngles(category(id).presets[0].angles.slice());
   }
   function toggleAngle(id: string) {
@@ -138,6 +141,18 @@ export default function BatchPage() {
     setProgress({ done: 0, ok: 0, fail: 0, total: toRun.length, current: "" });
     let ok = 0, fail = 0, done = 0;
 
+    // Create one parent Drive folder so product folders nest under it (not scattered).
+    let driveParentId: string | undefined;
+    if (drive && driveFolder.trim()) {
+      try {
+        const res = await fetch("/api/drive/folder", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: driveFolder.trim() }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.id) driveParentId = data.id;
+      } catch { /* fall back to scattered/storage */ }
+    }
+
     for (const { r, i } of toRun) {
       if (abortRef.current) break;
       const sku = cell(r, cols.sku) || `row${i + 1}`;
@@ -160,6 +175,7 @@ export default function BatchPage() {
         angleIds: selectedAngles,
         mode,
         drive,
+        driveParentId,
       };
       const ac = new AbortController();
       const to = setTimeout(() => ac.abort(), 75000);
@@ -297,7 +313,7 @@ export default function BatchPage() {
                 <tbody>
                   {validRows.map(({ r, i }) => {
                     const res = results[i];
-                    const firstUrl = res?.urls?.find(Boolean);
+                    const urls = res?.urls?.filter(Boolean) ?? [];
                     const status = res
                       ? (res.error ? `❌ ${res.error}` : `✅ ${res.done ?? ""}/${res.total ?? ""}`)
                       : (currentIdx === i ? "🔄 генерую…" : selected.has(i) ? "⏳ у черзі" : "—");
@@ -310,7 +326,11 @@ export default function BatchPage() {
                         <td className="p-2 text-[#8B857F] whitespace-nowrap">{cols.season ? cell(r, cols.season) : "—"}</td>
                         <td className="p-2 text-center text-[#8B857F]">{cols.photos.map((p) => cell(r, p)).filter(Boolean).length}</td>
                         <td className={`p-2 whitespace-nowrap ${res?.error ? "text-red-400" : currentIdx === i ? "text-[#E8943A]" : "text-[#8B857F]"}`}>
-                          {firstUrl && <a href={firstUrl} target="_blank" rel="noreferrer" className="text-[#E8943A] underline mr-2">переглянути</a>}
+                          {urls.length > 0 && (
+                            <span className="mr-2">
+                              {res!.urls!.map((u, k) => (u ? <a key={k} href={u} target="_blank" rel="noreferrer" className="text-[#E8943A] underline mr-1" title={`фото ${k + 1}`}>{k + 1}</a> : null))}
+                            </span>
+                          )}
                           {status}
                         </td>
                       </tr>
@@ -394,6 +414,14 @@ export default function BatchPage() {
                 <span className="block text-xs text-[#6B6560] mt-0.5">Постійні посилання + папки за артикулом (як у Make). Потребує підключеного Google у Налаштуваннях — без нього підуть звичайні посилання.</span>
               </span>
             </label>
+          )}
+          {mode !== "descriptions" && drive && (
+            <div>
+              <label className="block text-xs text-[#6B6560] mb-1">📁 Папка на Google Drive</label>
+              <input type="text" value={driveFolder} onChange={(e) => setDriveFolder(e.target.value)} disabled={phase === "running"}
+                placeholder="PhotoForge" className="w-full sm:w-80 bg-[#0C0B0A] border border-[#2A2723] rounded px-3 py-2 text-sm text-[#F5F0EB] focus:border-[#E8943A] focus:outline-none" />
+              <p className="text-[10px] text-[#6B6560] mt-1">Усі товари ляжуть у цю папку, кожен — у підпапку зі своїм артикулом.</p>
+            </div>
           )}
           {validRows.length > 300 && phase === "idle" && (
             <p className="text-xs text-amber-400/90">⚠️ {validRows.length} товарів — це багато для одного заходу (повільно, тримай вкладку відкритою). Краще ділити на партії до ~300.</p>

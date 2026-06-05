@@ -161,6 +161,9 @@ export async function uploadFileToDrive(
     parents: [folderId],
   });
 
+  // multipart/related: each part needs headers + a BLANK line before its body.
+  // The image part must end with "...image/jpeg\r\n\r\n" before the binary —
+  // the trailing \r\n\r\n below supplies the blank line Google requires.
   const body = [
     `--${boundary}`,
     "Content-Type: application/json; charset=UTF-8",
@@ -168,6 +171,7 @@ export async function uploadFileToDrive(
     metadata,
     `--${boundary}`,
     "Content-Type: image/jpeg",
+    "",
     "",
   ].join("\r\n");
 

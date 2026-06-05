@@ -23,6 +23,7 @@ interface BatchItemBody {
   photoUrls?: string[]; angleIds?: string[]; quality?: string;
   mode?: "images" | "descriptions" | "both";
   drive?: boolean;        // also upload generated images to the user's Google Drive
+  driveParentId?: string; // parent Drive folder to nest the product folder under
 }
 
 // ── SSRF defence: resolve DNS + reject private/internal targets, follow
@@ -198,7 +199,7 @@ export async function POST(request: Request) {
   let driveFolderUrl: string | undefined;
   if (driveToken) {
     try {
-      const f = await createDriveFolder(driveToken, (body.sku || productType || "PhotoForge").slice(0, 80));
+      const f = await createDriveFolder(driveToken, (body.sku || productType || "PhotoForge").slice(0, 80), body.driveParentId || undefined);
       driveFolderId = f.id; driveFolderUrl = f.webViewLink;
     } catch { /* fall back to storage URLs */ }
   }
