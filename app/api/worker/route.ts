@@ -47,8 +47,11 @@ export async function POST(request: Request) {
   // 120s > the 60s Vercel hard-kill, so reaping can never touch a live worker.
   try { await supabaseAdmin.rpc("reap_orphans", { p_stale_seconds: 120, p_max_passes: 5 }); } catch { /* best effort */ }
 
-  // Lanes (concurrent products) tunable via env — raise after a Vertex quota bump.
-  const lanes = Math.max(1, Number(process.env.WORKER_LANES) || 2);
+  // Lanes (concurrent products) tunable via env. Default 1: gemini image is on a
+  // shared quota (DSQ) — bursting many concurrent requests → 429 wall. One job at
+  // a time + paced image starts (see PACE below) rides UNDER the throttle so far
+  // more images actually complete (slower, but reliable).
+  const lanes = Math.max(1, Number(process.env.WORKER_LANES) || 1);
   const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: lanes, p_max_passes: 5 });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
   if (!g) return NextResponse.json({ idle: true });
@@ -116,6 +119,17 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     }
   }
 
+  // Pace image-generation starts to a steady rate (no bursts) so we stay under
+  // the shared-quota (DSQ) throttle. Tunable via WORKER_PACE_MS.
+  const PACE_MS = Math.max(0, Number(process.env.WORKER_PACE_MS) || 800);
+  let nextStart = 0;
+  const pace = async () => {
+    const now = Date.now();
+    const wait = Math.max(0, nextStart - now);
+    nextStart = Math.max(now, nextStart) + PACE_MS;
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  };
+
   // Per-slot failure reasons (for a diagnostic note when a job ends up partial).
   const failTags: Record<number, string> = {};
   const tagOf = (msg: string): string =>
@@ -131,6 +145,7 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     let curPrompt = prompts[i];
     let lastErr = "";
     for (let a = 1; a <= 3; a++) {
+      await pace(); // steady rate, no bursts → fewer 429 on the shared quota
       try {
         b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
         break;
@@ -139,7 +154,7 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
         // No image returned (policy block OR empty result) → re-sending the same
         // prompt is futile; VARY it. 429/timeout = the prompt is fine → back off.
         if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
-        if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 2500 * a : 600));
+        if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3500 * a : 600));
       }
     }
     if (!b64) { failTags[i] = tagOf(lastErr); return; } // failed this pass → retried next pass (bounded by MAX_PASSES)
@@ -176,7 +191,7 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
   // main slowness. Safe: one worker per job (lane cap + claim) + per-slot atomic
   // writes. POOL caps concurrent Vertex calls per worker. A lane stops pulling new
   // slots once the budget is spent; in-flight ones finish, the rest go next pass.
-  const POOL = Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 5);
+  const POOL = Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
   const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i]);
   let cursor = 0;
   const lane = async (): Promise<void> => {
