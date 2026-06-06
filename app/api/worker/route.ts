@@ -42,7 +42,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: 3, p_max_passes: 5 });
+  // Finalize any orphaned jobs (killed mid-pass at the pass cap) so a batch can
+  // never freeze. Cheap; runs every invocation, even when we end up idle.
+  // 120s > the 60s Vercel hard-kill, so reaping can never touch a live worker.
+  try { await supabaseAdmin.rpc("reap_orphans", { p_stale_seconds: 120, p_max_passes: 5 }); } catch { /* best effort */ }
+
+  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: 2, p_max_passes: 5 });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
   if (!g) return NextResponse.json({ idle: true });
 
@@ -58,7 +63,7 @@ export async function POST(request: Request) {
   }
 
   const { data: more } = await supabaseAdmin.rpc("queue_has_work");
-  if (more === true) await kickWorker(3); // refill up to the lane cap (extras return idle)
+  if (more === true) await kickWorker(2); // refill up to the lane cap (extras return idle)
   return NextResponse.json({ ok: true, id: g.id });
 }
 
@@ -107,9 +112,9 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     }
   }
 
-  for (let i = 0; i < N; i++) {
-    if (imageUrls[i]) continue;
-    if (Date.now() - t0 > BUDGET_MS) break; // out of time → remaining slots go to next pass
+  // Generate one slot: gen (3 attempts, 429-aware) → upload → Drive → atomic
+  // per-slot DB write (with a full-array fallback so a paid image is never lost).
+  const processSlot = async (i: number): Promise<void> => {
     let b64: string | null = null;
     for (let a = 1; a <= 3; a++) {
       try {
@@ -121,44 +126,50 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
         if (a < 3) await new Promise((r) => setTimeout(r, is429 ? 2500 * a : 600));
       }
     }
-    if (b64) {
+    if (!b64) return; // failed this pass → retried next pass (bounded by MAX_PASSES)
+    try {
+      imageUrls[i] = await uploadImage(b64, `${g.user_id}/${g.id}/${i + 1}.jpg`);
+      if (driveToken && driveFolderId) {
+        try {
+          const base = (p.sku || productType || "img").replace(/[^\wЀ-ӿ.\-]+/g, "_").slice(0, 80);
+          const up = await uploadFileToDrive(driveToken, driveFolderId, `${base}_${i + 1}.jpg`, b64);
+          driveUrls[i] = up.webViewLink;
+        } catch { /* keep storage URL */ }
+      }
+    } catch { return; /* upload failed → slot stays empty */ }
+    // Atomic per-slot write (FOR UPDATE serializes parallel writes on this row).
+    let saved = false;
+    for (let s = 0; s < 2 && !saved; s++) {
       try {
-        imageUrls[i] = await uploadImage(b64, `${g.user_id}/${g.id}/${i + 1}.jpg`);
-        if (driveToken && driveFolderId) {
-          try {
-            const base = (p.sku || productType || "img").replace(/[^\wЀ-ӿ.\-]+/g, "_").slice(0, 80);
-            const up = await uploadFileToDrive(driveToken, driveFolderId, `${base}_${i + 1}.jpg`, b64);
-            driveUrls[i] = up.webViewLink;
-          } catch { /* keep storage URL */ }
-        }
-      } catch { /* slot empty */ }
+        await supabaseAdmin.rpc("qa_set_slot", {
+          p_gen_id: g.id, p_index: i, p_image_url: imageUrls[i], p_drive_url: driveUrls[i] || "",
+        });
+        saved = true;
+      } catch { if (s === 0) await new Promise((r) => setTimeout(r, 400)); }
     }
-    // Atomic per-slot write (FOR UPDATE + recomputes images_generated). A full-
-    // array overwrite here was the "floating count" bug: a second worker on the
-    // same job would clobber slots it didn't know about. A throw here must NOT
-    // abort the job (that would skip the refund) — retry once, else drop the slot.
-    if (imageUrls[i]) {
-      let saved = false;
-      for (let s = 0; s < 2 && !saved; s++) {
-        try {
-          await supabaseAdmin.rpc("qa_set_slot", {
-            p_gen_id: g.id, p_index: i, p_image_url: imageUrls[i], p_drive_url: driveUrls[i] || "",
-          });
-          saved = true;
-        } catch { if (s === 0) await new Promise((r) => setTimeout(r, 400)); }
-      }
-      if (!saved) {
-        // Fallback: persist the whole local array (safe — lane cap + claim mean
-        // we're the only worker on this row) so a generated+uploaded image is NOT
-        // lost and re-generated (paid) next pass.
-        try {
-          await supabaseAdmin.from("generations")
-            .update({ image_urls: imageUrls, drive_urls: driveUrls, images_generated: imageUrls.filter(Boolean).length })
-            .eq("id", g.id).eq("claimed_at", g.claimed_at);
-        } catch { imageUrls[i] = ""; driveUrls[i] = ""; } // truly unpersistable → count as failed
-      }
+    if (!saved) {
+      try {
+        await supabaseAdmin.from("generations")
+          .update({ image_urls: imageUrls, drive_urls: driveUrls, images_generated: imageUrls.filter(Boolean).length })
+          .eq("id", g.id).eq("claimed_at", g.claimed_at);
+      } catch { imageUrls[i] = ""; driveUrls[i] = ""; } // truly unpersistable → count as failed
     }
-  }
+  };
+
+  // Generate pending slots IN PARALLEL (a pool). Sequential generation was the
+  // main slowness. Safe: one worker per job (lane cap + claim) + per-slot atomic
+  // writes. POOL caps concurrent Vertex calls per worker. A lane stops pulling new
+  // slots once the budget is spent; in-flight ones finish, the rest go next pass.
+  const POOL = Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 5);
+  const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i]);
+  let cursor = 0;
+  const lane = async (): Promise<void> => {
+    while (cursor < pending.length) {
+      if (Date.now() - t0 > BUDGET_MS) return;
+      await processSlot(pending[cursor++]); // cursor read+increment is atomic in JS
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(POOL, pending.length) }, lane));
 
   // g.passes is this pass's number (claim_generation incremented it atomically).
   const remaining = imageUrls.filter((u) => !u).length;
