@@ -118,3 +118,29 @@ export const CATEGORY_LIST = Object.values(CATEGORIES);
 export function category(id?: string): Category {
   return CATEGORIES[(id as CategoryId)] ?? CATEGORIES.clothing;
 }
+
+// Keyword classifier so a MIXED bulk file routes each product to the right
+// category (a vase must not be generated on a model). Checked specific-wearable
+// first; "object" is the catch for non-wearable goods. Returns null when nothing
+// matches → caller falls back to the user's dropdown choice.
+const CATEGORY_KEYWORDS: Record<CategoryId, string[]> = {
+  shoes: ["взутт", "кросів", "черевик", "туфл", "чобот", "кед", "сандал", "босоніж", "тапоч", "мокасин", "балетк", "shoe", "boot", "sneaker", "sandal", "loafer"],
+  jewelry: ["прикрас", "ювелір", "каблучк", "кольцо", "кольца", "перстен", "сережк", "сергі", "кольє", "колье", "підвіс", "кулон", "браслет", "ланцюж", "цепочк", "брошк", "ring", "earring", "necklace", "bracelet", "pendant"],
+  accessories: ["сумк", "рюкзак", "ремінь", "ремен", "пояс", "шапк", "кепк", "капелюх", "берет", "окуляр", "рукавич", "шарф", "хустк", "гаманц", "гаманець", "портмоне", "парасол", "клатч", "барсетк", "краватк", "bag", "backpack", "belt", "scarf", "wallet", "glasses", "hat", "cap"],
+  clothing: ["сороч", "блуз", "футболк", "майк", "штан", "джинс", "плatt", "плаття", "сукн", "спідниц", "юбк", "курт", "пальт", "светр", "кофт", "худі", "толстов", "костюм", "шорт", "білизн", "трус", "бюстг", "піжам", "халат", "комбінез", "боді", "реглан", "лонгслів", "світшот", "жилет", "лосин", "легінс", "shirt", "dress", "pant", "jean", "jacket", "coat", "sweater", "hoodie", "skirt", "одяг"],
+  object: ["ваз", "воск", "посуд", "чашк", "кружк", "тарілк", "ложк", "виделк", "каструл", "сковор", "лампа", "світильник", "свічк", "декор", "іграшк", "гаджет", "авто", "інструмент", "килим", "подушк", "рушник", "постіл", "штор", "годинник", "картин", "рамк", "термос", "пляшк", "контейнер", "органайзер", "для дому", "кухн", "меблі", "чайник", "блендер", "зволожув", "ароматизатор", "clock", "vase", "lamp", "decor", "toy", "kitchen", "tool"],
+};
+const CLASSIFY_ORDER: CategoryId[] = ["shoes", "jewelry", "accessories", "clothing", "object"];
+
+export function classifyCategory(text?: string): CategoryId | null {
+  const s = (text || "").toLowerCase().trim();
+  if (!s) return null;
+  // Bed linen ("постільна білизна") collides with the clothing stem "білизн"
+  // (underwear) — resolve household textiles to object up front so they aren't
+  // generated on a model. (Plain "жіноча/нижня білизна" has none of these → clothing.)
+  if (/постіл|простир|наволоч|пододіял|підковдр|скатерт/.test(s)) return "object";
+  for (const id of CLASSIFY_ORDER) {
+    if (CATEGORY_KEYWORDS[id].some((k) => s.includes(k))) return id;
+  }
+  return null;
+}

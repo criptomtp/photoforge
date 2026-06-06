@@ -14,6 +14,7 @@ interface ProductIn {
   sku?: string; productType?: string; name?: string; brand?: string; color?: string;
   size?: string; gender?: string; season?: string; composition?: string; country?: string;
   photoUrls?: string[];
+  category?: string; angleIds?: string[]; // per-product (auto-detected on client)
 }
 interface StartBody {
   products: ProductIn[];
@@ -38,9 +39,7 @@ export async function POST(request: Request) {
   const { admin, byok, freeQuota } = apiKeyCtx;
   const metered = !admin && !byok;
 
-  const cat = category(body.category);
   const tier = qualityTier(body.quality);
-  const N = (body.angleIds?.length) ? resolveAngles(body.angleIds, cat.angles).length : cat.angles.length;
   const batchId = randomUUID();
 
   // Create the parent Drive folder once (so products nest under it).
@@ -54,17 +53,23 @@ export async function POST(request: Request) {
 
   let queued = 0;
   for (const pr of products) {
+    // Per-product category + angles (auto-detected on the client; fall back to
+    // the batch default). A mixed file routes each item correctly.
+    const pcat = category(pr.category || body.category);
+    const pAngleIds = (pr.angleIds?.length ? pr.angleIds : body.angleIds) ?? [];
+    const resolved = pAngleIds.length ? resolveAngles(pAngleIds, pcat.angles) : [];
+    const N = resolved.length || pcat.angles.length; // never 0 (else no images)
     const params = {
-      userEmail: user.email, category: cat.id,
+      userEmail: user.email, category: pcat.id,
       productType: (pr.productType || pr.name || "").trim(), name: pr.name,
       brand: pr.brand, color: pr.color, size: pr.size, gender: pr.gender, season: pr.season,
       composition: pr.composition, country: pr.country, sku: pr.sku,
       photoUrls: (pr.photoUrls ?? []).filter(Boolean).slice(0, 9),
-      angleIds: body.angleIds ?? [], quality: tier.id, mode: body.mode ?? "images",
+      angleIds: resolved.length ? pAngleIds : [], quality: tier.id, mode: body.mode ?? "images",
       drive: !!body.drive, driveParentId,
     };
     const { data: gen, error } = await supabaseAdmin.from("generations").insert({
-      user_id: user.id, batch_id: batchId, sku: pr.sku ?? null, category: cat.id,
+      user_id: user.id, batch_id: batchId, sku: pr.sku ?? null, category: pcat.id,
       product_type: params.productType, season: pr.season ?? "", gender: pr.gender ?? "",
       status: "queued", params, image_urls: [],
     }).select("id").single();

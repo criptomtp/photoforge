@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { CATEGORY_LIST, category, type CategoryId } from "@/lib/categories";
+import { CATEGORY_LIST, category, classifyCategory, type CategoryId } from "@/lib/categories";
 
 type Mode = "images" | "both" | "descriptions";
 type BgChoice = "studio" | "any" | "column";
@@ -80,6 +80,19 @@ export default function BatchPage() {
     setPresetId("quick3");
     setCustomAngles(category(id).presets[0].angles.slice());
   }
+
+  // Each product is routed to its OWN category (auto-detected from the «Товар»
+  // text), falling back to the dropdown for unrecognized items — so a mixed file
+  // (vases + shirts) doesn't put non-wearable goods on a model.
+  const resolveCat = (r: Row): CategoryId => classifyCategory(cell(r, cols.product)) ?? categoryId;
+  // The chosen preset, mapped to the resolved category's own angle set.
+  const anglesForCat = (catId: CategoryId): string[] => {
+    const c = category(catId);
+    if (presetId === "custom") {
+      return catId === categoryId ? customAngles.slice() : (c.presets.find((p) => p.id === "quick3")?.angles ?? c.presets[0].angles).slice();
+    }
+    return (c.presets.find((p) => p.id === presetId)?.angles ?? c.presets[0].angles).slice();
+  };
   function toggleAngle(id: string) {
     setPresetId("custom");
     setCustomAngles((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]));
@@ -212,19 +225,24 @@ export default function BatchPage() {
   async function startBatch() {
     const toRun = validRows.filter(({ i }) => selected.has(i));
     if (toRun.length === 0) return;
-    const products = toRun.map(({ r, i }) => ({
-      sku: skuOf(r, i),
-      productType: cell(r, cols.product),
-      name: cell(r, cols.product),
-      brand: cell(r, cols.brand),
-      color: cell(r, cols.color),
-      size: cell(r, cols.size),
-      gender: mapGender(cell(r, cols.gender)),
-      season: rowSeason(r),
-      composition: cell(r, cols.composition),
-      country: cell(r, cols.country),
-      photoUrls: cols.photos.map((p) => cell(r, p)).filter(Boolean),
-    }));
+    const products = toRun.map(({ r, i }) => {
+      const pcat = resolveCat(r);
+      return {
+        sku: skuOf(r, i),
+        productType: cell(r, cols.product),
+        name: cell(r, cols.product),
+        brand: cell(r, cols.brand),
+        color: cell(r, cols.color),
+        size: cell(r, cols.size),
+        gender: mapGender(cell(r, cols.gender)),
+        season: rowSeason(r),
+        composition: cell(r, cols.composition),
+        country: cell(r, cols.country),
+        photoUrls: cols.photos.map((p) => cell(r, p)).filter(Boolean),
+        category: pcat,                 // per-product category (auto-detected)
+        angleIds: anglesForCat(pcat),   // angles for THAT category
+      };
+    });
     setPhase("running");
     setResultsBySku({});
     setBatchTotal(products.length);
@@ -386,6 +404,7 @@ export default function BatchPage() {
                     <th className="p-2 w-8"><input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={phase === "running"} className="accent-[#E8943A]" /></th>
                     <th className="p-2 text-left font-medium">Артикул</th>
                     <th className="p-2 text-left font-medium">Товар</th>
+                    <th className="p-2 text-left font-medium">Категорія</th>
                     <th className="p-2 text-left font-medium">Стать</th>
                     <th className="p-2 text-left font-medium">Сезон</th>
                     <th className="p-2 text-center font-medium">Фото</th>
@@ -402,6 +421,9 @@ export default function BatchPage() {
                         <td className="p-2"><input type="checkbox" checked={selected.has(i)} onChange={() => toggleRow(i)} disabled={phase === "running"} className="accent-[#E8943A]" /></td>
                         <td className="p-2 text-[#F5F0EB] whitespace-nowrap">{skuOf(r, i)}</td>
                         <td className="p-2 text-[#8B857F]">{cell(r, cols.product)}</td>
+                        <td className="p-2 whitespace-nowrap" title={classifyCategory(cell(r, cols.product)) ? "Визначено автоматично з назви" : "За замовчуванням (не розпізнано)"}>
+                          {(() => { const pc = resolveCat(r); const c = category(pc); const auto = !!classifyCategory(cell(r, cols.product)); return <span className={auto ? "text-[#8B857F]" : "text-[#E8943A]"}>{c.emoji} {c.label}{!auto ? " *" : ""}</span>; })()}
+                        </td>
                         <td className="p-2 text-[#8B857F] whitespace-nowrap">{mapGender(cell(r, cols.gender))}</td>
                         <td className="p-2 text-[#8B857F] whitespace-nowrap">{cols.season ? cell(r, cols.season) : "—"}</td>
                         <td className="p-2 text-center text-[#8B857F]">{cols.photos.map((p) => cell(r, p)).filter(Boolean).length}</td>
@@ -437,7 +459,7 @@ export default function BatchPage() {
           {/* Options */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs text-[#6B6560] mb-1">Категорія (для всіх)</label>
+              <label className="block text-xs text-[#6B6560] mb-1">Категорія <span className="font-normal">— запасна (тип визначається авто з назви; «*» = не розпізнано)</span></label>
               <select value={categoryId} onChange={(e) => onCategory(e.target.value as CategoryId)} disabled={phase === "running"}
                 className="w-full bg-[#161412] border border-[#2A2723] rounded-lg px-3 py-2 text-sm text-[#F5F0EB]">
                 {CATEGORY_LIST.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}

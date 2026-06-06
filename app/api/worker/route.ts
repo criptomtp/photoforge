@@ -74,7 +74,8 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
   const { apiKey, admin, byok, freeQuota } = await resolveApiKey(g.user_id, p.userEmail);
   const metered = !admin && !byok;
   const cat = category(p.category);
-  const angles = (p.angleIds?.length) ? resolveAngles(p.angleIds, cat.angles) : [...cat.angles];
+  let angles = (p.angleIds?.length) ? resolveAngles(p.angleIds, cat.angles) : [...cat.angles];
+  if (angles.length === 0) angles = [...cat.angles]; // angleIds didn't match this category → use its full set
   const N = angles.length;
   const season = p.season ?? "";
   const bg = season ? "lifestyle" : "catalog";
