@@ -7,13 +7,11 @@ interface Slot { index: number; angle: string; url: string; driveUrl: string }
 interface Item {
   id: string; sku: string; productType: string; status: string;
   done: number; total: number; originals: string[]; slots: Slot[];
-  season?: string;
+  season?: string; approved?: boolean;
 }
 
 type SceneChoice = "studio" | "seasonal" | "free";
 const SCENE_LABEL: Record<SceneChoice, string> = { studio: "Студія", seasonal: "За сезоном", free: "Довільна" };
-
-const APPROVE_KEY = (batchId: string) => `pf_qa_approved_${batchId}`;
 
 export default function QAClient({ batchId }: { batchId: string }) {
   const [items, setItems] = useState<Item[]>([]);
@@ -27,7 +25,10 @@ export default function QAClient({ batchId }: { batchId: string }) {
     try {
       const res = await fetch(`/api/qa/${batchId}`);
       const data = await res.json();
-      if (Array.isArray(data.items)) setItems(data.items);
+      if (Array.isArray(data.items)) {
+        setItems(data.items);
+        setApproved(Object.fromEntries(data.items.map((it: Item) => [it.id, !!it.approved])));
+      }
     } finally {
       setLoading(false);
     }
@@ -35,19 +36,21 @@ export default function QAClient({ batchId }: { batchId: string }) {
 
   useEffect(() => { load(); }, [load]);
 
-  useEffect(() => {
+  // Approval is persisted server-side (so the bulk tab can filter approved SKUs).
+  const toggleApprove = async (genId: string) => {
+    const next = !approved[genId];
+    setApproved((prev) => ({ ...prev, [genId]: next })); // optimistic
     try {
-      const raw = localStorage.getItem(APPROVE_KEY(batchId));
-      if (raw) setApproved(JSON.parse(raw));
-    } catch { /* ignore */ }
-  }, [batchId]);
-
-  const toggleApprove = (genId: string) => {
-    setApproved((prev) => {
-      const next = { ...prev, [genId]: !prev[genId] };
-      try { localStorage.setItem(APPROVE_KEY(batchId), JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
+      const res = await fetch("/api/qa/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generationId: genId, approved: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setApproved((prev) => ({ ...prev, [genId]: !next })); // revert
+      alert("Не вдалося зберегти статус. Спробуй ще.");
+    }
   };
 
   async function act(genId: string, index: number, action: "regen" | "delete", scene?: SceneChoice) {

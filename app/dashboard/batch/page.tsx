@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { CATEGORY_LIST, category, type CategoryId } from "@/lib/categories";
 
@@ -93,7 +93,50 @@ export default function BatchPage() {
   const pollRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // #6: server status per SKU (across all past runs) + "hide done" filter +
+  // remember the uploaded sheet across reloads.
+  type SkuStat = { status: string; done: number; total: number; approved: boolean; batchId: string | null; at: string };
+  const [skuStatus, setSkuStatus] = useState<Record<string, SkuStat>>({});
+  const [hideDone, setHideDone] = useState(false);
+
   const skuOf = (r: Row, i: number) => cell(r, cols.sku) || `row${i + 1}`;
+
+  const loadSkuStatus = useCallback(async () => {
+    try {
+      const r = await fetch("/api/bulk/status");
+      const d = await r.json();
+      if (d?.bySku) setSkuStatus(d.bySku);
+    } catch { /* ignore */ }
+  }, []);
+
+  // On mount: restore the last uploaded sheet + load per-SKU status.
+  const STORE_KEY = "pf_bulk_upload_v1";
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (Array.isArray(d?.rows) && d.rows.length) {
+          // Harden against a corrupt/partial stored cols (photos must be an array).
+          const c: ColMap = { photos: [], ...(d.cols ?? {}) };
+          setRows(d.rows); setHeaders(d.headers ?? []); setCols(c); setFileName(d.fileName ?? "");
+          const valid = (d.rows as Row[]).map((r, i) => ({ r, i }))
+            .filter(({ r }) => (c.photos ?? []).some((p) => cell(r, p)) && cell(r, c.product)).map(({ i }) => i);
+          setSelected(new Set(valid));
+        }
+      }
+    } catch { /* ignore */ }
+    loadSkuStatus();
+  }, [loadSkuStatus]);
+
+  // Persist the uploaded sheet (best-effort; skip if too big for localStorage).
+  useEffect(() => {
+    if (rows.length === 0) return;
+    try {
+      const s = JSON.stringify({ fileName, headers, cols, rows });
+      if (s.length < 4_000_000) localStorage.setItem(STORE_KEY, s);
+    } catch { /* quota — ignore */ }
+  }, [rows, headers, cols, fileName]);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -117,18 +160,28 @@ export default function BatchPage() {
       .filter(({ r }) => dcols.photos.some((p) => cell(r, p)) && cell(r, dcols.product))
       .map(({ i }) => i);
     setSelected(new Set(validIdx));
+    loadSkuStatus(); // refresh which of these SKUs are already done/approved
   }
 
   const validRows = rows
     .map((r, i) => ({ r, i }))
     .filter(({ r }) => cols.photos.some((p) => cell(r, p)) && (cell(r, cols.product) || mode === "descriptions"));
 
-  const allSelected = validRows.length > 0 && validRows.every(({ i }) => selected.has(i));
+  // A SKU is "done" if its latest generation was approved or finished.
+  const isDoneSku = (sku: string) => { const s = skuStatus[sku]; return !!s && (s.approved || s.status === "done"); };
+  const doneCount = validRows.filter(({ r, i }) => isDoneSku(skuOf(r, i))).length;
+  // Rows shown in the table (optionally hiding already-done ones).
+  const displayRows = hideDone ? validRows.filter(({ r, i }) => !isDoneSku(skuOf(r, i))) : validRows;
+
+  const allSelected = displayRows.length > 0 && displayRows.every(({ i }) => selected.has(i));
   function toggleRow(i: number) {
     setSelected((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; });
   }
   function toggleAll() {
-    setSelected(allSelected ? new Set() : new Set(validRows.map(({ i }) => i)));
+    setSelected(allSelected ? new Set() : new Set(displayRows.map(({ i }) => i)));
+  }
+  function selectNotDone() {
+    setSelected(new Set(validRows.filter(({ r, i }) => !isDoneSku(skuOf(r, i))).map(({ i }) => i)));
   }
 
   function rowSeason(r: Row): string {
@@ -149,6 +202,7 @@ export default function BatchPage() {
       if (items.length > 0 && items.every((it) => it.status === "done" || it.status === "error")) {
         setPhase("done");
         pollRef.current = false;
+        loadSkuStatus(); // refresh the done/approved overlay
         return;
       }
     } catch { /* keep polling */ }
@@ -200,7 +254,11 @@ export default function BatchPage() {
     const maxImgs = Math.max(1, ...all.map((r) => Math.max(r.urls?.filter(Boolean).length ?? 0, r.driveUrls?.filter(Boolean).length ?? 0)));
     const out = rows.map((r, i) => {
       const res = resultsBySku[skuOf(r, i)];
-      const row: Row = { ...r };
+      // Sanitize ALL string cells (not just AI fields) against spreadsheet
+      // formula-injection when the file is reopened in Excel/Sheets.
+      const row: Row = Object.fromEntries(
+        Object.entries(r).map(([k, v]) => [k, typeof v === "string" ? safe(v) : v])
+      );
       if (res) {
         for (let k = 0; k < maxImgs; k++) {
           row[`Згенерована картинка ${k + 1}`] = res.driveUrls?.[k] || res.urls?.[k] || "";
@@ -239,6 +297,20 @@ export default function BatchPage() {
     return "⏳ у черзі";
   }
 
+  // Server-side status for a SKU from past runs (shown when there's no live result).
+  function serverBadge(sku: string) {
+    const s = skuStatus[sku];
+    if (!s) return <span className="text-[#6B6560]">⬜ нове</span>;
+    if (s.approved) return <span className="text-green-400">✅ підтверджено</span>;
+    if (s.status === "done")
+      return s.batchId
+        ? <Link href={`/dashboard/history/${s.batchId}`} className="text-[#E8943A] underline">✓ {s.done}/{s.total} — перевірити</Link>
+        : <span className="text-[#E8943A]">✓ {s.done}/{s.total}</span>;
+    if (s.status === "error") return <span className="text-red-400">✗ помилка</span>;
+    if (s.status === "queued" || s.status === "processing") return <span className="text-[#E8943A]">🔄 у роботі</span>;
+    return <span className="text-[#6B6560]">⬜ нове</span>;
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -256,6 +328,16 @@ export default function BatchPage() {
         <p className="text-[#6B6560] text-xs mt-1">Перший аркуш, перший рядок = заголовки колонок</p>
       </div>
       <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFile} />
+
+      {rows.length > 0 && phase !== "running" && (
+        <div className="flex items-center gap-3 -mt-2 text-xs">
+          <span className="text-[#6B6560]">📄 Файл запам'ятовано — повернешся пізніше й він тут.</span>
+          <button type="button" onClick={() => {
+            try { localStorage.removeItem(STORE_KEY); } catch {}
+            setRows([]); setHeaders([]); setCols({ photos: [] }); setFileName(""); setSelected(new Set()); setResultsBySku({});
+          }} className="text-[#6B6560] hover:text-red-400 underline">Забути файл</button>
+        </div>
+      )}
 
       {rows.length > 0 && (
         <>
@@ -311,7 +393,7 @@ export default function BatchPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {validRows.map(({ r, i }) => {
+                  {displayRows.map(({ r, i }) => {
                     const res = resultsBySku[skuOf(r, i)];
                     const urls = res?.urls?.filter(Boolean) ?? [];
                     const active = res?.status === "processing";
@@ -329,7 +411,7 @@ export default function BatchPage() {
                               {res!.urls!.map((u, k) => (u ? <a key={k} href={u} target="_blank" rel="noreferrer" className="text-[#E8943A] underline mr-1" title={`фото ${k + 1}`}>{k + 1}</a> : null))}
                             </span>
                           )}
-                          {statusOf(res)}
+                          {res ? statusOf(res) : serverBadge(skuOf(r, i))}
                         </td>
                       </tr>
                     );
@@ -337,9 +419,18 @@ export default function BatchPage() {
                 </tbody>
               </table>
             </div>
-            <div className="p-2 text-xs text-[#6B6560] border-t border-[#2A2723] flex justify-between">
-              <span>Обрано <span className="text-[#E8943A]">{validRows.filter(({ i }) => selected.has(i)).length}</span> з {validRows.length}</span>
-              {rows.length > validRows.length && <span>{rows.length - validRows.length} пропущено (немає фото/товару)</span>}
+            <div className="p-2 text-xs text-[#6B6560] border-t border-[#2A2723] flex flex-wrap items-center gap-x-4 gap-y-1 justify-between">
+              <span>Обрано <span className="text-[#E8943A]">{validRows.filter(({ i }) => selected.has(i)).length}</span> з {hideDone ? displayRows.length : validRows.length}</span>
+              <div className="flex items-center gap-3 flex-wrap">
+                {doneCount > 0 && <span className="text-green-400">✓ вже зроблено: {doneCount}</span>}
+                <button type="button" onClick={selectNotDone} disabled={phase === "running"}
+                  className="text-[#E8943A] hover:underline disabled:opacity-40">Обрати лише не зроблені</button>
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} className="accent-[#E8943A]" />
+                  Сховати вже зроблені
+                </label>
+                {rows.length > validRows.length && <span>{rows.length - validRows.length} пропущено</span>}
+              </div>
             </div>
           </div>
 

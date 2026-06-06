@@ -25,7 +25,7 @@ export async function GET(
 
   const { data: rows } = await supabase
     .from("generations")
-    .select("id, sku, status, images_generated, image_urls, drive_urls, params, created_at")
+    .select("id, sku, status, images_generated, image_urls, drive_urls, params, created_at, approved")
     .eq("batch_id", batchId)
     .eq("user_id", user.id)
     .order("created_at", { ascending: true });
@@ -66,6 +66,7 @@ export async function GET(
       done: (g.images_generated as number) ?? 0,
       total,
       season: pr.season ?? "",
+      approved: !!g.approved,
       originals: (pr.photoUrls ?? []).slice(0, 9),
       slots,
     };
