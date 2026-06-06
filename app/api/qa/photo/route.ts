@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { resolveApiKey, chargeTokens, creditTokens } from "@/lib/tokens";
-import { generateImage, imageInstructionsFor, type GeminiImagePart } from "@/lib/gemini";
+import { generateImage, imageInstructionsFor, sceneSuffix, varyForSafety, bgForScene, type GeminiImagePart, type SceneChoice } from "@/lib/gemini";
 import { uploadImage, removeImage } from "@/lib/supabase/storage";
 import { resolveAngles, qualityTier, TOKEN_COSTS } from "@/lib/angles";
 import { category } from "@/lib/categories";
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { generationId?: string; index?: number; action?: string };
+  let body: { generationId?: string; index?: number; action?: string; scene?: string };
   try { body = await request.json(); } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }); }
   const { generationId, action } = body;
   const index = Number(body.index);
@@ -68,7 +68,10 @@ export async function POST(request: Request) {
 
   const productType = (p.productType || p.name || "").trim();
   const season = p.season ?? "";
-  const bg = season ? "lifestyle" : "catalog";
+  const scene: SceneChoice = body.scene === "studio" || body.scene === "free" || body.scene === "seasonal"
+    ? body.scene
+    : (season ? "seasonal" : "studio");
+  const bg = bgForScene(scene);
   const tier = qualityTier(p.quality);
   const cost = TOKEN_COSTS.image_gen * tier.tokenMultiplier;
 
@@ -82,17 +85,20 @@ export async function POST(request: Request) {
     catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 402 }); }
   }
 
-  const prompt = prompts[index] || `Professional product photo, angle ${index + 1}.`;
+  const basePrompt = (prompts[index] || `Professional product photo, angle ${index + 1}.`) + sceneSuffix(scene, season);
+  const instr = imageInstructionsFor(cat, productType, bg);
   let b64: string | null = null;
-  // Short 22s per-attempt timeout so up to 2 retries still fit inside the 60s
-  // function cap (a longer attempt + retry could exceed it → Vercel kills the
-  // function AFTER the image is saved → UI sees "failed" but the photo exists).
-  for (let a = 1; a <= 2; a++) {
+  let curPrompt = basePrompt;
+  // 18s per-attempt × 3 fits inside the 60s cap (safety/429 fail fast). On a
+  // SAFETY block, VARY the prompt for the next try; on 429/timeout, retry as-is.
+  for (let a = 1; a <= 3; a++) {
     try {
-      b64 = await generateImage(apiKey, prompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg), 22_000);
+      b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, instr, 18_000);
       break;
     } catch (e) {
-      if (a < 2) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(String(e)) ? 3000 : 600));
+      const msg = String(e);
+      if (a < 3 && /SAFETY_BLOCK/.test(msg)) { curPrompt = varyForSafety(basePrompt, a - 1); continue; }
+      if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3000 : 600));
     }
   }
   if (!b64) {

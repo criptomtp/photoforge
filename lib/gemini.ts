@@ -211,7 +211,7 @@ const ONMODEL_IMAGE_INSTRUCTIONS = `ЗАВДАННЯ: згенеруй НОВЕ 
 — Згадка про точність товару тут одна. НЕ сприймай це як команду «скопіюй усе фото».
 
 ЩО КАТЕГОРИЧНО НЕ ПЕРЕНОСИТИ З РЕФЕРЕНСУ:
-— НЕ копіюй людину з референсу: ані обличчя, голову, волосся, бороду, ані фігуру чи позу один-в-один.
+— ОБЛИЧЧЯ Й ЗОВНІШНІСТЬ МОДЕЛІ — ПОВНІСТЮ ІНШІ, НІЖ У БУДЬ-ЯКОЇ ЛЮДИНИ НА РЕФЕРЕНСІ. Це КЛЮЧОВЕ правило. Вважай, що людину на референсі «вирізано»: бери з неї ЛИШЕ товар-герой, а модель ПРИДУМАЙ ЗАНОВО — інше обличчя, інші риси, інша етнічність/колір волосся, інша зачіска та статура. Категорично НЕ відтворюй обличчя/голову/волосся/бороду/фігуру/позу людини з референсу.
 — НЕ переноси інші предмети одягу й аксесуари, що випадково одягнені на референс-моделі: сорочку, футболку/майку під низом, светр, куртку, шапку, взуття, годинник, сумку, прикраси. Багатошаровість одягу з референсу ІГНОРУЙ повністю — у нашому кадрі цих речей немає.
 — Фон, реквізит і освітлення референсу теж не переноси.
 — Якщо незрозуміло, що є товаром-героєм — це {PRODUCT}; усе інше на фото лише контекст, який ти НЕ відтворюєш.
@@ -280,6 +280,37 @@ export function imageInstructionsFor(cat: Category, product?: string, bg: BgMode
   const tpl = cat.onModel ? ONMODEL_IMAGE_INSTRUCTIONS : OBJECT_IMAGE_INSTRUCTIONS;
   const hero = product?.trim() ? `«${product.trim()}»` : "цільовий товар, описаний у промпті вище";
   return tpl.replace(/\{PRODUCT\}/g, () => hero).replace(/\{BG_RULE\}/g, () => bgRule(bg));
+}
+
+export type SceneChoice = "studio" | "seasonal" | "free";
+
+// Maps a per-shot scene choice → the bg mode generateImage instructions use.
+export function bgForScene(scene: SceneChoice): BgMode {
+  return scene === "studio" ? "catalog" : "lifestyle";
+}
+
+// A forceful per-shot scene directive appended to the prompt so a manual QA
+// regen actually honours the chosen scene (overrides whatever the stored
+// per-angle prompt assumed).
+export function sceneSuffix(scene: SceneChoice, season: string): string {
+  if (scene === "studio")
+    return "\n\nФОН ДЛЯ ЦЬОГО КАДРУ: чиста студія / каталог — рівний нейтральний світло-сірий фон, без сцени, вулиці, інтер'єру чи реквізиту. Лише м'яка тінь під об'єктом.";
+  if (scene === "free")
+    return "\n\nФОН ДЛЯ ЦЬОГО КАДРУ: реалістична стильна сцена на твій вибір (вулиця / інтер'єр / офіс / кафе / лофт / дім), без прив'язки до сезону, доречна товару.";
+  return season
+    ? `\n\nФОН ДЛЯ ЦЬОГО КАДРУ: реалістична сцена, доречна сезону «${season}» за погодою й атмосферою (без кліше на кшталт листя/снігу), різнопланова локація.`
+    : "\n\nФОН ДЛЯ ЦЬОГО КАДРУ: реалістична стильна сцена, доречна товару.";
+}
+
+// When a generation is blocked by Google's safety policy, re-sending the SAME
+// prompt is pointless. Append escalating conservative constraints so the next
+// attempt has a real chance to pass.
+export function varyForSafety(prompt: string, attempt: number): string {
+  const mods = [
+    "\n\nВАЖЛИВО (повтор через блокування політикою): зроби кадр МАКСИМАЛЬНО нейтральним і безпечним — модель повністю одягнена, скромна професійна поза стоячи, без оголеної шкіри й без чуттєвості; нейтральний студійний фон; інша зовнішність моделі.",
+    "\n\nВАЖЛИВО (ще одна спроба, було блокування): прибери будь-який потенційно чутливий контекст — лише товар на новій повністю одягненій моделі у фронтальній нейтральній позі, чиста студія; уникай великих планів обличчя/тіла.",
+  ];
+  return prompt + (mods[Math.min(attempt, mods.length - 1)] ?? mods[mods.length - 1]);
 }
 
 // Safe default for generateImage when no per-call instructions are supplied.
@@ -465,7 +496,11 @@ export async function generateImage(
       data.promptFeedback?.blockReason ??
       data.candidates?.[0]?.finishReason ??
       "немає зображення у відповіді";
-    throw new Error(`Gemini не повернув зображення (причина: ${reason}).`);
+    // Tag policy/safety blocks distinctly so callers retry with a VARIED prompt
+    // (re-sending the same prompt to a safety block is pointless) vs 429/timeout
+    // which just retry as-is.
+    const safety = /SAFETY|PROHIBIT|BLOCK|RECITATION|IMAGE_SAFETY|CSAM|CIVIC/i.test(String(reason));
+    throw new Error(`${safety ? "SAFETY_BLOCK" : "NO_IMAGE"}: Gemini не повернув зображення (причина: ${reason}).`);
   }
 
   return imgData.data; // base64 string

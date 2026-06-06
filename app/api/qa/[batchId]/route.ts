@@ -9,7 +9,7 @@ const BUCKET = "generations";
 
 interface RowParams {
   angleIds?: string[]; category?: string; photoUrls?: string[];
-  productType?: string; name?: string; sku?: string;
+  productType?: string; name?: string; sku?: string; season?: string;
 }
 
 // QA data for a batch: per-product originals + generated slots (fresh signed
@@ -65,6 +65,7 @@ export async function GET(
       status: g.status as string,
       done: (g.images_generated as number) ?? 0,
       total,
+      season: pr.season ?? "",
       originals: (pr.photoUrls ?? []).slice(0, 9),
       slots,
     };

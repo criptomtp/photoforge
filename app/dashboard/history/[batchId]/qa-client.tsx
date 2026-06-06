@@ -7,7 +7,11 @@ interface Slot { index: number; angle: string; url: string; driveUrl: string }
 interface Item {
   id: string; sku: string; productType: string; status: string;
   done: number; total: number; originals: string[]; slots: Slot[];
+  season?: string;
 }
+
+type SceneChoice = "studio" | "seasonal" | "free";
+const SCENE_LABEL: Record<SceneChoice, string> = { studio: "Студія", seasonal: "За сезоном", free: "Довільна" };
 
 const APPROVE_KEY = (batchId: string) => `pf_qa_approved_${batchId}`;
 
@@ -15,8 +19,9 @@ export default function QAClient({ batchId }: { batchId: string }) {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [idx, setIdx] = useState(0);
-  const [busy, setBusy] = useState<string | null>(null); // `${genId}:${index}`
+  const [busy, setBusy] = useState<Set<string>>(new Set()); // keys in flight — parallel regen
   const [approved, setApproved] = useState<Record<string, boolean>>({});
+  const [sceneBySlot, setSceneBySlot] = useState<Record<string, SceneChoice>>({});
 
   const load = useCallback(async () => {
     try {
@@ -45,14 +50,15 @@ export default function QAClient({ batchId }: { batchId: string }) {
     });
   };
 
-  async function act(genId: string, index: number, action: "regen" | "delete") {
+  async function act(genId: string, index: number, action: "regen" | "delete", scene?: SceneChoice) {
     if (action === "delete" && !confirm("Видалити це фото? Воно також зникне з Google Диску.")) return;
-    setBusy(`${genId}:${index}`);
+    const key = `${genId}:${index}`;
+    setBusy((b) => new Set(b).add(key));
     try {
       const res = await fetch("/api/qa/photo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ generationId: genId, index, action }),
+        body: JSON.stringify({ generationId: genId, index, action, scene }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -76,7 +82,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
       // Network/timeout — the action may still have completed server-side; reload.
       await load();
     } finally {
-      setBusy(null);
+      setBusy((b) => { const n = new Set(b); n.delete(key); return n; });
     }
   }
 
@@ -178,7 +184,9 @@ export default function QAClient({ batchId }: { batchId: string }) {
           <p className="text-[#6B6560] text-xs uppercase tracking-wide mb-2">Згенеровані</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {it.slots.map((s) => {
-              const isBusy = busy === `${it.id}:${s.index}`;
+              const slotKey = `${it.id}:${s.index}`;
+              const isBusy = busy.has(slotKey);
+              const scene = sceneBySlot[slotKey] ?? (it.season ? "seasonal" : "studio");
               return (
                 <div key={s.index} className="space-y-1.5">
                   <div className="aspect-[3/4] rounded-lg overflow-hidden border border-[#2A2723] bg-[#0C0B0A] relative">
@@ -201,9 +209,19 @@ export default function QAClient({ batchId }: { batchId: string }) {
                   <p className="text-[#6B6560] text-[11px] truncate" title={s.angle}>
                     {s.angle}{s.driveUrl ? " · ☁" : ""}
                   </p>
+                  <select
+                    value={scene}
+                    onChange={(e) => setSceneBySlot((m) => ({ ...m, [slotKey]: e.target.value as SceneChoice }))}
+                    className="w-full bg-[#0C0B0A] border border-[#2A2723] text-[#6B6560] text-[10px] rounded px-1 py-1"
+                    title="Сцена для перегенерації"
+                  >
+                    {(["studio", "seasonal", "free"] as SceneChoice[]).map((sc) => (
+                      <option key={sc} value={sc}>🎬 {SCENE_LABEL[sc]}</option>
+                    ))}
+                  </select>
                   <div className="flex gap-1">
                     <button
-                      onClick={() => act(it.id, s.index, "regen")}
+                      onClick={() => act(it.id, s.index, "regen", scene)}
                       disabled={isBusy}
                       className="flex-1 bg-[#2A2723] hover:bg-[#373330] disabled:opacity-40 text-[#F5F0EB] text-[11px] py-1.5 rounded"
                     >↻ {s.url ? "Перегенерувати" : "Згенерувати"}</button>
