@@ -66,6 +66,7 @@ export async function GET(
       done: (g.images_generated as number) ?? 0,
       total,
       season: pr.season ?? "",
+      onModel: cat.onModel,
       approved: !!g.approved,
       originals: (pr.photoUrls ?? []).slice(0, 9),
       slots,

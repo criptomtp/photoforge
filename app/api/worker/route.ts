@@ -78,7 +78,8 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
   if (angles.length === 0) angles = [...cat.angles]; // angleIds didn't match this category → use its full set
   const N = angles.length;
   const season = p.season ?? "";
-  const bg = season ? "lifestyle" : "catalog";
+  // On-model → always a real scene (studio + person reference = copied model).
+  const bg = cat.onModel ? "lifestyle" : (season ? "lifestyle" : "catalog");
   const productType = (p.productType || p.name || "").trim();
   const tier = qualityTier(p.quality);
 

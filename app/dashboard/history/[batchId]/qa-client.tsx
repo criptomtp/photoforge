@@ -7,7 +7,7 @@ interface Slot { index: number; angle: string; url: string; driveUrl: string }
 interface Item {
   id: string; sku: string; productType: string; status: string;
   done: number; total: number; originals: string[]; slots: Slot[];
-  season?: string; approved?: boolean;
+  season?: string; approved?: boolean; onModel?: boolean;
 }
 
 type SceneChoice = "studio" | "seasonal" | "free";
@@ -189,7 +189,8 @@ export default function QAClient({ batchId }: { batchId: string }) {
             {it.slots.map((s) => {
               const slotKey = `${it.id}:${s.index}`;
               const isBusy = busy.has(slotKey);
-              const scene = sceneBySlot[slotKey] ?? (it.season ? "seasonal" : "studio");
+              // On-model default = a real scene (studio + person ref copies the model); object default = studio.
+              const scene = sceneBySlot[slotKey] ?? (it.season ? "seasonal" : (it.onModel ? "free" : "studio"));
               return (
                 <div key={s.index} className="space-y-1.5">
                   <div className="aspect-[3/4] rounded-lg overflow-hidden border border-[#2A2723] bg-[#0C0B0A] relative">

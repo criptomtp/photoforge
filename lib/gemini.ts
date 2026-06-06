@@ -335,9 +335,11 @@ export async function generatePrompts(
   const N = angles.length;
   const imageParts = referenceImages.map((img) => ({ inline_data: img.inline_data }));
 
-  // Background is the user's choice: a season → lifestyle scene; no season →
-  // clean studio/catalog. This drives {BG_RULE} in the system prompt.
-  const bg: BgMode = season ? "lifestyle" : "catalog";
+  // ON-MODEL items ALWAYS use a real scene: a plain studio bg + a person
+  // reference makes gemini reproduce the reference PERSON (validated regression).
+  // A real scene forces it to recompose → a fresh model. Clean studio is only for
+  // non-wearable product shots.
+  const bg: BgMode = cat.onModel ? "lifestyle" : (season ? "lifestyle" : "catalog");
 
   const genderLine = cat.onModel
     ? `Цільова аудиторія / Gender: ${gender || "обери доречний для товару"}\n`
@@ -360,11 +362,11 @@ export async function generatePrompts(
               `Знайди саме «${hero}» на референс-фото (там може бути кілька речей) і працюй ТІЛЬКИ з ним як з головним товаром. ` +
               `Решту образу підбери ЗАНОВО під «${hero}», не копіюючи інші речі з референсу.\n` +
               genderLine +
-              (!season
+              (bg === "catalog"
                 ? `Фон: ЧИСТА СТУДІЯ / КАТАЛОГ — нейтральний студійний фон для всіх кадрів, БЕЗ сцени, вулиці чи інтер'єру.\n`
-                : season === "any"
-                  ? `Фон: РІЗНОПЛАНОВА реалістична сцена — обирай РІЗНІ локації (вулиця/інтер'єр/офіс/кафе/дім), кожен кадр інший, без прив'язки до конкретного сезону, але доречно товару.\n`
-                  : `Фон: реалістична сцена, доречна сезону «${season}» за погодою й атмосферою (БЕЗ сезонних кліше на кшталт листя/снігу), РІЗНІ локації — не лише вулиця.\n`) +
+                : (season && season !== "any")
+                  ? `Фон: реалістична сцена, доречна сезону «${season}» за погодою й атмосферою (БЕЗ сезонних кліше на кшталт листя/снігу), РІЗНІ локації — не лише вулиця.\n`
+                  : `Фон: РІЗНОПЛАНОВА реалістична сцена — обирай РІЗНІ локації (вулиця/інтер'єр/офіс/кафе/дім/студійний простір), кожен кадр інший, доречно товару.\n`) +
               `Створи ${N} детальних промптів згідно з правилами вище.`,
           },
         ],
