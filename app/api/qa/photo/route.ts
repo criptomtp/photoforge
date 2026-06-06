@@ -84,12 +84,15 @@ export async function POST(request: Request) {
 
   const prompt = prompts[index] || `Professional product photo, angle ${index + 1}.`;
   let b64: string | null = null;
+  // Short 22s per-attempt timeout so up to 2 retries still fit inside the 60s
+  // function cap (a longer attempt + retry could exceed it → Vercel kills the
+  // function AFTER the image is saved → UI sees "failed" but the photo exists).
   for (let a = 1; a <= 2; a++) {
     try {
-      b64 = await generateImage(apiKey, prompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
+      b64 = await generateImage(apiKey, prompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg), 22_000);
       break;
     } catch (e) {
-      if (a < 2) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(String(e)) ? 3500 : 600));
+      if (a < 2) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(String(e)) ? 3000 : 600));
     }
   }
   if (!b64) {

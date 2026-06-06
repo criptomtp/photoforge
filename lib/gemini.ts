@@ -394,7 +394,8 @@ export async function generateImage(
   referenceImages: GeminiImagePart[],
   modelOverride?: string,
   locationOverride?: string,
-  instructions: string = DEFAULT_IMAGE_INSTRUCTIONS
+  instructions: string = DEFAULT_IMAGE_INSTRUCTIONS,
+  timeoutMs: number = 50_000
 ): Promise<string> {
   // Use only the first reference image (main reference) for image generation
   const refPart = referenceImages[0];
@@ -421,9 +422,10 @@ export async function generateImage(
     : STUDIO_IMAGE_MODEL);
 
   // AI Studio image gen requires x-goog-api-key header (not query param).
-  // 50s timeout: a single hung image fails fast instead of stranding the run
-  // (the others generate in parallel and still finish within the 60s budget).
-  const IMG_TIMEOUT = 50_000;
+  // Timeout: a single hung image fails fast instead of stranding the run.
+  // Callers under a tight request budget (e.g. interactive QA regen) pass a
+  // shorter value so a retry still fits inside the 60s function cap.
+  const IMG_TIMEOUT = timeoutMs;
   let res: Response;
   if (apiKey !== null) {
     res = await fetchWithTimeout(

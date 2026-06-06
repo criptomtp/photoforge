@@ -55,7 +55,14 @@ export default function QAClient({ batchId }: { batchId: string }) {
         body: JSON.stringify({ generationId: genId, index, action }),
       });
       const data = await res.json();
-      if (!res.ok) { alert(data.error || "Не вдалося"); return; }
+      if (!res.ok) {
+        // The image may have been saved even though the request reported an error
+        // (e.g. a slow regen that finished just as the function timed out). Reload
+        // the real server state so a generated photo still shows up.
+        alert((data.error || "Не вдалося") + " — оновлюю стан…");
+        await load();
+        return;
+      }
       setItems((prev) => prev.map((it) => {
         if (it.id !== genId) return it;
         const slots = it.slots.map((s) =>
@@ -66,7 +73,8 @@ export default function QAClient({ batchId }: { batchId: string }) {
         return { ...it, slots, done: slots.filter((s) => s.url).length };
       }));
     } catch {
-      alert("Помилка мережі");
+      // Network/timeout — the action may still have completed server-side; reload.
+      await load();
     } finally {
       setBusy(null);
     }
