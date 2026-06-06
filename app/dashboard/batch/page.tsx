@@ -84,7 +84,13 @@ export default function BatchPage() {
   // Each product is routed to its OWN category (auto-detected from the «Товар»
   // text), falling back to the dropdown for unrecognized items — so a mixed file
   // (vases + shirts) doesn't put non-wearable goods on a model.
-  const resolveCat = (r: Row): CategoryId => classifyCategory(cell(r, cols.product)) ?? categoryId;
+  // Priority: manual per-row override → keyword → AI → dropdown fallback.
+  const resolveCat = (r: Row, i: number): CategoryId => {
+    const name = cell(r, cols.product);
+    return catOverride[i] ?? classifyCategory(name) ?? aiCat[name] ?? categoryId;
+  };
+  // Was this row auto-resolved (keyword or AI), or just the dropdown fallback?
+  const catIsKnown = (r: Row, i: number) => i in catOverride || !!classifyCategory(cell(r, cols.product)) || !!aiCat[cell(r, cols.product)];
   // The chosen preset, mapped to the resolved category's own angle set.
   const anglesForCat = (catId: CategoryId): string[] => {
     const c = category(catId);
@@ -111,6 +117,27 @@ export default function BatchPage() {
   type SkuStat = { status: string; done: number; total: number; approved: boolean; batchId: string | null; at: string };
   const [skuStatus, setSkuStatus] = useState<Record<string, SkuStat>>({});
   const [hideDone, setHideDone] = useState(false);
+  // Category resolution: AI fills keyword gaps; per-row manual override wins.
+  const [aiCat, setAiCat] = useState<Record<string, CategoryId>>({});
+  const [catOverride, setCatOverride] = useState<Record<number, CategoryId>>({});
+  const [classifying, setClassifying] = useState(false);
+
+  // Ask the AI to categorize product names that keyword-matching couldn't place.
+  const classifyMissing = useCallback(async (rws: Row[], c: ColMap) => {
+    const names = Array.from(new Set(
+      rws.map((r) => cell(r, c.product)).filter(Boolean).filter((n) => !classifyCategory(n))
+    ));
+    if (names.length === 0) return;
+    setClassifying(true);
+    try {
+      const res = await fetch("/api/bulk/classify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ names }),
+      });
+      const d = await res.json();
+      if (d?.byName) setAiCat((prev) => ({ ...prev, ...d.byName }));
+    } catch { /* keyword/dropdown fallback */ } finally { setClassifying(false); }
+  }, []);
 
   const skuOf = (r: Row, i: number) => cell(r, cols.sku) || `row${i + 1}`;
 
@@ -133,23 +160,27 @@ export default function BatchPage() {
           // Harden against a corrupt/partial stored cols (photos must be an array).
           const c: ColMap = { photos: [], ...(d.cols ?? {}) };
           setRows(d.rows); setHeaders(d.headers ?? []); setCols(c); setFileName(d.fileName ?? "");
+          if (d.aiCat && typeof d.aiCat === "object") setAiCat(d.aiCat);
+          if (d.catOverride && typeof d.catOverride === "object") setCatOverride(d.catOverride);
           const valid = (d.rows as Row[]).map((r, i) => ({ r, i }))
             .filter(({ r }) => (c.photos ?? []).some((p) => cell(r, p)) && cell(r, c.product)).map(({ i }) => i);
           setSelected(new Set(valid));
+          // Only run the AI if we don't already have cached results (avoids a call every reload).
+          if (!d.aiCat || Object.keys(d.aiCat).length === 0) classifyMissing(d.rows as Row[], c);
         }
       }
     } catch { /* ignore */ }
     loadSkuStatus();
-  }, [loadSkuStatus]);
+  }, [loadSkuStatus, classifyMissing]);
 
-  // Persist the uploaded sheet (best-effort; skip if too big for localStorage).
+  // Persist the uploaded sheet + category results (best-effort; skip if too big).
   useEffect(() => {
     if (rows.length === 0) return;
     try {
-      const s = JSON.stringify({ fileName, headers, cols, rows });
+      const s = JSON.stringify({ fileName, headers, cols, rows, aiCat, catOverride });
       if (s.length < 4_000_000) localStorage.setItem(STORE_KEY, s);
     } catch { /* quota — ignore */ }
-  }, [rows, headers, cols, fileName]);
+  }, [rows, headers, cols, fileName, aiCat, catOverride]);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -173,7 +204,10 @@ export default function BatchPage() {
       .filter(({ r }) => dcols.photos.some((p) => cell(r, p)) && cell(r, dcols.product))
       .map(({ i }) => i);
     setSelected(new Set(validIdx));
-    loadSkuStatus(); // refresh which of these SKUs are already done/approved
+    setAiCat({});
+    setCatOverride({});
+    loadSkuStatus();           // refresh which of these SKUs are already done/approved
+    classifyMissing(json, dcols); // AI-categorize names the keywords can't place
   }
 
   const validRows = rows
@@ -226,7 +260,7 @@ export default function BatchPage() {
     const toRun = validRows.filter(({ i }) => selected.has(i));
     if (toRun.length === 0) return;
     const products = toRun.map(({ r, i }) => {
-      const pcat = resolveCat(r);
+      const pcat = resolveCat(r, i);
       return {
         sku: skuOf(r, i),
         productType: cell(r, cols.product),
@@ -352,7 +386,7 @@ export default function BatchPage() {
           <span className="text-[#6B6560]">📄 Файл запам'ятовано — повернешся пізніше й він тут.</span>
           <button type="button" onClick={() => {
             try { localStorage.removeItem(STORE_KEY); } catch {}
-            setRows([]); setHeaders([]); setCols({ photos: [] }); setFileName(""); setSelected(new Set()); setResultsBySku({});
+            setRows([]); setHeaders([]); setCols({ photos: [] }); setFileName(""); setSelected(new Set()); setResultsBySku({}); setAiCat({}); setCatOverride({});
           }} className="text-[#6B6560] hover:text-red-400 underline">Забути файл</button>
         </div>
       )}
@@ -421,8 +455,13 @@ export default function BatchPage() {
                         <td className="p-2"><input type="checkbox" checked={selected.has(i)} onChange={() => toggleRow(i)} disabled={phase === "running"} className="accent-[#E8943A]" /></td>
                         <td className="p-2 text-[#F5F0EB] whitespace-nowrap">{skuOf(r, i)}</td>
                         <td className="p-2 text-[#8B857F]">{cell(r, cols.product)}</td>
-                        <td className="p-2 whitespace-nowrap" title={classifyCategory(cell(r, cols.product)) ? "Визначено автоматично з назви" : "За замовчуванням (не розпізнано)"}>
-                          {(() => { const pc = resolveCat(r); const c = category(pc); const auto = !!classifyCategory(cell(r, cols.product)); return <span className={auto ? "text-[#8B857F]" : "text-[#E8943A]"}>{c.emoji} {c.label}{!auto ? " *" : ""}</span>; })()}
+                        <td className="p-2 whitespace-nowrap">
+                          <select value={resolveCat(r, i)} disabled={phase === "running"}
+                            onChange={(e) => setCatOverride((o) => ({ ...o, [i]: e.target.value as CategoryId }))}
+                            title={catIsKnown(r, i) ? "Категорія визначена авто — можеш виправити" : "Не розпізнано — обери вручну"}
+                            className={`bg-[#0C0B0A] border rounded px-1.5 py-1 text-[11px] ${catIsKnown(r, i) ? "border-[#2A2723] text-[#8B857F]" : "border-[#E8943A]/60 text-[#E8943A]"}`}>
+                            {CATEGORY_LIST.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
+                          </select>
                         </td>
                         <td className="p-2 text-[#8B857F] whitespace-nowrap">{mapGender(cell(r, cols.gender))}</td>
                         <td className="p-2 text-[#8B857F] whitespace-nowrap">{cols.season ? cell(r, cols.season) : "—"}</td>
@@ -444,6 +483,7 @@ export default function BatchPage() {
             <div className="p-2 text-xs text-[#6B6560] border-t border-[#2A2723] flex flex-wrap items-center gap-x-4 gap-y-1 justify-between">
               <span>Обрано <span className="text-[#E8943A]">{validRows.filter(({ i }) => selected.has(i)).length}</span> з {hideDone ? displayRows.length : validRows.length}</span>
               <div className="flex items-center gap-3 flex-wrap">
+                {classifying && <span className="text-[#E8943A]">🤖 AI визначає категорії…</span>}
                 {doneCount > 0 && <span className="text-green-400">✓ вже зроблено: {doneCount}</span>}
                 <button type="button" onClick={selectNotDone} disabled={phase === "running"}
                   className="text-[#E8943A] hover:underline disabled:opacity-40">Обрати лише не зроблені</button>

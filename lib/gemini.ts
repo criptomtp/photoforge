@@ -589,3 +589,43 @@ export async function generateListing(
     tags: Array.isArray(parsed.tags) ? parsed.tags.map(String).slice(0, 15) : [],
   };
 }
+
+// ── AI category classification (bulk) ───────────────────────────────────────
+// Reads product names and assigns one of the 5 categories — far more robust than
+// keyword matching for a large, varied catalog. Returns {name: categoryId}; names
+// it can't place are simply omitted (caller falls back to keyword/dropdown).
+export async function classifyProducts(
+  apiKey: string | null,
+  names: string[],
+): Promise<Record<string, string>> {
+  if (names.length === 0) return {};
+  const list = names.map((n, i) => `${i + 1}. ${n}`).join("\n");
+  const system =
+    `Ти класифікуєш назви товарів інтернет-магазину РІВНО в одну категорію. Категорії (id):\n` +
+    `- clothing — одяг, що носять на тілі (сорочки, футболки, сукні, штани, джинси, куртки, светри, нижня білизна, піжами, дитячий одяг тощо)\n` +
+    `- shoes — будь-яке взуття\n` +
+    `- jewelry — прикраси (каблучки, сережки, кольє, браслети, ланцюжки, підвіски)\n` +
+    `- accessories — носимі аксесуари (сумки, рюкзаки, ремені, шапки, окуляри, рукавички, шарфи, гаманці, парасолі, краватки)\n` +
+    `- object — НЕ-носимі товари: усе інше (для дому, кухня, посуд, декор, меблі, домашній текстиль як постільна білизна/рушники/штори, гаджети, електроніка, інструменти, авто-товари, іграшки, косметика, побутове)\n` +
+    `Якщо сумнівно між одягом і не-носимим — це object. Відповідай ВИКЛЮЧНО валідним JSON, де КЛЮЧ — НОМЕР рядка зі списку (рядок), а значення — id категорії: {"1":"object","2":"clothing", ...} для КОЖНОГО номера. Без пояснень.`;
+  const body = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts: [{ text: `Список:\n${list}\n\nJSON {номер: id} для всіх ${names.length} рядків.` }] }],
+    generationConfig: { responseMimeType: "application/json", temperature: 0 },
+  };
+  const model = apiKey === null
+    ? (await import("./vertex-auth")).VERTEX_PROMPT_MODEL
+    : STUDIO_PROMPT_MODEL;
+  const res = await callGenerateContent(model, body, apiKey, undefined, 35_000);
+  if (!res.ok) throw new Error(`Classify error ${res.status}`);
+  const data = await res.json();
+  const text: string = (data.candidates?.[0]?.content?.parts ?? [])
+    .map((p: { text?: string }) => p.text ?? "").join("").trim();
+  let parsed: Record<string, string> = {};
+  try { parsed = JSON.parse(text); }
+  catch { const m = text.match(/\{[\s\S]*\}/); if (m) { try { parsed = JSON.parse(m[0]); } catch { /* give up */ } } }
+  // Map line numbers back to the original names (robust to the model rewriting names).
+  const byName: Record<string, string> = {};
+  names.forEach((n, i) => { const cat = parsed[String(i + 1)]; if (typeof cat === "string") byName[n] = cat; });
+  return byName;
+}
