@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { resolveApiKey, refundTokens, restoreFreeGeneration } from "@/lib/tokens";
 import {
-  generatePrompts, generateImage, imageInstructionsFor, generateListing, type GeminiImagePart,
+  generatePrompts, generateImage, imageInstructionsFor, generateListing, varyForSafety, type GeminiImagePart,
 } from "@/lib/gemini";
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveAngles, qualityTier, refundForRun } from "@/lib/angles";
@@ -47,7 +47,9 @@ export async function POST(request: Request) {
   // 120s > the 60s Vercel hard-kill, so reaping can never touch a live worker.
   try { await supabaseAdmin.rpc("reap_orphans", { p_stale_seconds: 120, p_max_passes: 5 }); } catch { /* best effort */ }
 
-  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: 2, p_max_passes: 5 });
+  // Lanes (concurrent products) tunable via env — raise after a Vertex quota bump.
+  const lanes = Math.max(1, Number(process.env.WORKER_LANES) || 2);
+  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: lanes, p_max_passes: 5 });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
   if (!g) return NextResponse.json({ idle: true });
 
@@ -116,14 +118,17 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
   // per-slot DB write (with a full-array fallback so a paid image is never lost).
   const processSlot = async (i: number): Promise<void> => {
     let b64: string | null = null;
+    let curPrompt = prompts[i];
     for (let a = 1; a <= 3; a++) {
       try {
-        b64 = await generateImage(apiKey, prompts[i], refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
+        b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
         break;
       } catch (e) {
-        // 429 = free (Vertex rejects before generating) — back off and retry.
-        const is429 = /\b429\b|RESOURCE_EXHAUSTED/i.test(String(e));
-        if (a < 3) await new Promise((r) => setTimeout(r, is429 ? 2500 * a : 600));
+        const msg = String(e);
+        // Policy/safety block → re-sending the same prompt is futile; VARY it for
+        // the next attempt. 429 = free (Vertex rejects pre-generation) → back off.
+        if (a < 3 && /SAFETY_BLOCK/.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
+        if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 2500 * a : 600));
       }
     }
     if (!b64) return; // failed this pass → retried next pass (bounded by MAX_PASSES)
