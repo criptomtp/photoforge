@@ -115,24 +115,33 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     }
   }
 
-  // Generate one slot: gen (3 attempts, 429-aware) → upload → Drive → atomic
-  // per-slot DB write (with a full-array fallback so a paid image is never lost).
+  // Per-slot failure reasons (for a diagnostic note when a job ends up partial).
+  const failTags: Record<number, string> = {};
+  const tagOf = (msg: string): string =>
+    /SAFETY_BLOCK|PROHIBIT|RECITATION/i.test(msg) ? "блок політики" :
+    /NO_IMAGE/i.test(msg) ? "без зображення" :
+    /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? "черга (429)" :
+    /timeout|aborted|abort/i.test(msg) ? "таймаут" : "помилка";
+
+  // Generate one slot: gen (3 attempts) → upload → Drive → atomic per-slot DB
+  // write (with a full-array fallback so a paid image is never lost).
   const processSlot = async (i: number): Promise<void> => {
     let b64: string | null = null;
     let curPrompt = prompts[i];
+    let lastErr = "";
     for (let a = 1; a <= 3; a++) {
       try {
         b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
         break;
       } catch (e) {
-        const msg = String(e);
-        // Policy/safety block → re-sending the same prompt is futile; VARY it for
-        // the next attempt. 429 = free (Vertex rejects pre-generation) → back off.
-        if (a < 3 && /SAFETY_BLOCK/.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
+        const msg = String(e); lastErr = msg;
+        // No image returned (policy block OR empty result) → re-sending the same
+        // prompt is futile; VARY it. 429/timeout = the prompt is fine → back off.
+        if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
         if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 2500 * a : 600));
       }
     }
-    if (!b64) return; // failed this pass → retried next pass (bounded by MAX_PASSES)
+    if (!b64) { failTags[i] = tagOf(lastErr); return; } // failed this pass → retried next pass (bounded by MAX_PASSES)
     try {
       imageUrls[i] = await uploadImage(b64, `${g.user_id}/${g.id}/${i + 1}.jpg`);
       if (driveToken && driveFolderId) {
@@ -203,13 +212,24 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     } catch { /* non-fatal */ }
   }
 
+  // Diagnostic note when some slots never produced an image — so the reason is
+  // visible without server logs (counts by failure type from the final pass).
+  let failNote: string | null = null;
+  if (done < N) {
+    const tags = Object.values(failTags);
+    const counts: Record<string, number> = {};
+    for (const t of tags) counts[t] = (counts[t] ?? 0) + 1;
+    const summary = Object.entries(counts).map(([t, c]) => `${t}×${c}`).join(", ");
+    failNote = `${N - done}/${N} не вийшло${summary ? ` (${summary})` : ""}`;
+  }
+
   // Atomically take ownership of finalization. If 0 rows match, another worker
   // already finalized this job (hang/stale-reclaim path) → we must NOT run the
   // token/counter side-effects again (double refund / double increment).
   const { data: finalized } = await supabaseAdmin.from("generations").update({
     status: done > 0 ? "done" : "error",
     ...(listing ? { listing } : {}),
-    ...(done === 0 ? { error_message: "all_images_failed" } : {}),
+    ...(done === 0 ? { error_message: failNote ?? "all_images_failed" } : (failNote ? { error_message: failNote } : {})),
   }).eq("id", g.id).eq("status", "processing").eq("claimed_at", g.claimed_at).select("id");
   if (!finalized || finalized.length === 0) return; // lost the claim — no side-effects
 

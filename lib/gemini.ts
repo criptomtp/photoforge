@@ -302,13 +302,14 @@ export function sceneSuffix(scene: SceneChoice, season: string): string {
     : "\n\nФОН ДЛЯ ЦЬОГО КАДРУ: реалістична стильна сцена, доречна товару.";
 }
 
-// When a generation is blocked by Google's safety policy, re-sending the SAME
-// prompt is pointless. Append escalating conservative constraints so the next
-// attempt has a real chance to pass.
+// When a generation returns no image (policy block OR empty result), re-sending
+// the SAME prompt is pointless. Append escalating SIMPLIFYING constraints that
+// work for BOTH product-only and on-model shots — give the model an easier,
+// safer, cleaner brief.
 export function varyForSafety(prompt: string, attempt: number): string {
   const mods = [
-    "\n\nВАЖЛИВО (повтор через блокування політикою): зроби кадр МАКСИМАЛЬНО нейтральним і безпечним — модель повністю одягнена, скромна професійна поза стоячи, без оголеної шкіри й без чуттєвості; нейтральний студійний фон; інша зовнішність моделі.",
-    "\n\nВАЖЛИВО (ще одна спроба, було блокування): прибери будь-який потенційно чутливий контекст — лише товар на новій повністю одягненій моделі у фронтальній нейтральній позі, чиста студія; уникай великих планів обличчя/тіла.",
+    "\n\nПОВТОР (попередня спроба не дала зображення): СПРОСТИ кадр — чистий нейтральний світло-сірий студійний фон, один товар-герой у центрі, рівна проста композиція, без зайвих елементів, реквізиту й тексту. Якщо в кадрі є людина — повністю одягнена, скромна нейтральна поза, інша зовнішність.",
+    "\n\nПОВТОР-2 (досі без зображення): МІНІМАЛІЗМ і безпека — лише сам товар на простому світлому фоні, прямий фронтальний ракурс, без сцени, без чуттєвості й без великих планів тіла. Зроби максимально нейтральний, «каталоговий» кадр.",
   ];
   return prompt + (mods[Math.min(attempt, mods.length - 1)] ?? mods[mods.length - 1]);
 }

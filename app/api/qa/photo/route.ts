@@ -97,7 +97,8 @@ export async function POST(request: Request) {
       break;
     } catch (e) {
       const msg = String(e);
-      if (a < 3 && /SAFETY_BLOCK/.test(msg)) { curPrompt = varyForSafety(basePrompt, a - 1); continue; }
+      // No image (policy block OR empty) → vary the prompt. 429/timeout → retry as-is.
+      if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(basePrompt, a - 1); continue; }
       if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3000 : 600));
     }
   }
