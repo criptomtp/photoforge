@@ -51,3 +51,12 @@ export async function uploadImage(
 export async function removeImage(path: string): Promise<void> {
   try { await supabase.storage.from(BUCKET).remove([path]); } catch { /* ignore */ }
 }
+
+/** Download a stored image as base64 (used as the "same model" anchor reference). */
+export async function downloadImageBase64(path: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.storage.from(BUCKET).download(path);
+    if (error || !data) return null;
+    return Buffer.from(await data.arrayBuffer()).toString("base64");
+  } catch { return null; }
+}

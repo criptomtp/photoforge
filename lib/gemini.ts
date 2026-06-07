@@ -314,6 +314,25 @@ export function varyForSafety(prompt: string, attempt: number): string {
   return prompt + (mods[Math.min(attempt, mods.length - 1)] ?? mods[mods.length - 1]);
 }
 
+// Instructions for non-anchor angles: the reference IS a previously-generated
+// shot of the FINAL model wearing the product. Keep that exact person + garment,
+// change only the camera angle/pose → one consistent new model across the series.
+const ANCHOR_IMAGE_INSTRUCTIONS = `ЗАВДАННЯ: це КАДР ІЗ ТІЄЇ САМОЇ СЕРІЇ. Додане зображення — ЕТАЛОН: на ньому вже фінальна модель і товар-герой. Згенеруй НОВИЙ РАКУРС цієї ж сцени з ТІЄЮ САМОЮ людиною.
+
+ЗБЕРЕЖИ ІДЕНТИЧНО (як на еталоні):
+— ТУ САМУ людину-модель: те саме обличчя, риси, відтінок шкіри, колір і довжину волосся, зачіску, бороду, статуру. Це ОДНА Й ТА САМА людина, НЕ інша і НЕ змінена.
+— ТОЙ САМИЙ товар-герой: крій, колір і відтінок, текстуру, матеріал, принти, логотипи, фурнітуру — точно як на еталоні.
+— Той самий стиль образу (низ/верх/взуття), освітлення й тип сцени.
+
+ЗМІНИ ТІЛЬКИ:
+— Ракурс і позу камери згідно з описом нижче (інший бік, 3/4, ззаду, деталь тощо). Позу моделі можна адаптувати під ракурс, але це та сама людина в тому самому образі та сцені.
+
+ЗАБОРОНЕНО: робити іншу модель, змінювати обличчя/зачіску, міняти колір чи крій товару, повертатися до будь-якої сторонньої людини. Output PNG, рівно 1035x1440 (3:4). У відповідь — тільки слово ГОТОВО.`;
+
+export function anchorInstructions(): string {
+  return ANCHOR_IMAGE_INSTRUCTIONS;
+}
+
 // Safe default for generateImage when no per-call instructions are supplied.
 const DEFAULT_IMAGE_INSTRUCTIONS = ONMODEL_IMAGE_INSTRUCTIONS
   .replace(/\{PRODUCT\}/g, () => "цільовий товар, описаний у промпті вище")

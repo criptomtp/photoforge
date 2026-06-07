@@ -1,9 +1,9 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { resolveApiKey, refundTokens, restoreFreeGeneration } from "@/lib/tokens";
 import {
-  generatePrompts, generateImage, imageInstructionsFor, generateListing, varyForSafety, type GeminiImagePart,
+  generatePrompts, generateImage, imageInstructionsFor, generateListing, varyForSafety, anchorInstructions, type GeminiImagePart,
 } from "@/lib/gemini";
-import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
+import { ensureBucket, uploadImage, downloadImageBase64 } from "@/lib/supabase/storage";
 import { resolveAngles, qualityTier, refundForRun } from "@/lib/angles";
 import { category } from "@/lib/categories";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
@@ -13,7 +13,7 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 60; // Vercel Hobby cap — the worker stays well under it
 const BUDGET_MS = 45_000;      // stop starting new images past this; finish + re-trigger
-const MAX_PASSES = 5;          // bound retries of failed/untried slots across passes
+const MAX_PASSES = 8;          // bound retries of failed/untried slots across passes (paced runs do less per pass)
 
 interface JobParams {
   userEmail?: string; category?: string; productType?: string; name?: string;
@@ -138,26 +138,34 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? "черга (429)" :
     /timeout|aborted|abort/i.test(msg) ? "таймаут" : "помилка";
 
-  // Generate one slot: gen (3 attempts) → upload → Drive → atomic per-slot DB
-  // write (with a full-array fallback so a paid image is never lost).
-  const processSlot = async (i: number): Promise<void> => {
+  // Generate one slot. anchorIn != null → reproduce the SAME model+product from
+  // that anchor image at a new angle (consistency); null → fresh shot from the
+  // product reference (this IS how the anchor itself is made). Returns the b64.
+  const processSlot = async (i: number, anchorIn: GeminiImagePart | null): Promise<string | null> => {
+    const refsForCall = anchorIn ? [anchorIn] : refs;
+    const instr = anchorIn ? anchorInstructions() : imageInstructionsFor(cat, productType, bg);
+    // Anchored angles get a MINIMAL angle directive (the model/scene come from the
+    // anchor image) so the per-angle prompt's own scene can't fight the anchor.
+    const base = anchorIn
+      ? `Той самий образ, модель і сцена, що на доданому фото-еталоні. Згенеруй НОВИЙ РАКУРС цього ж кадру: ${angles[i]?.label ?? "інший ракурс"}${angles[i]?.desc ? " — " + angles[i].desc : ""}.`
+      : prompts[i];
     let b64: string | null = null;
-    let curPrompt = prompts[i];
+    let curPrompt = base;
     let lastErr = "";
     for (let a = 1; a <= 3; a++) {
       await pace(); // steady rate, no bursts → fewer 429 on the shared quota
       try {
-        b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
+        b64 = await generateImage(apiKey, curPrompt, refsForCall, tier.model, tier.location, instr);
         break;
       } catch (e) {
         const msg = String(e); lastErr = msg;
         // No image returned (policy block OR empty result) → re-sending the same
         // prompt is futile; VARY it. 429/timeout = the prompt is fine → back off.
-        if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
+        if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(base, a - 1); continue; }
         if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3500 * a : 600));
       }
     }
-    if (!b64) { failTags[i] = tagOf(lastErr); return; } // failed this pass → retried next pass (bounded by MAX_PASSES)
+    if (!b64) { failTags[i] = tagOf(lastErr); return null; } // failed → retried next pass (bounded by MAX_PASSES)
     try {
       imageUrls[i] = await uploadImage(b64, `${g.user_id}/${g.id}/${i + 1}.jpg`);
       if (driveToken && driveFolderId) {
@@ -167,7 +175,7 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
           driveUrls[i] = up.webViewLink;
         } catch { /* keep storage URL */ }
       }
-    } catch { return; /* upload failed → slot stays empty */ }
+    } catch { return null; /* upload failed → slot stays empty */ }
     // Atomic per-slot write (FOR UPDATE serializes parallel writes on this row).
     let saved = false;
     for (let s = 0; s < 2 && !saved; s++) {
@@ -185,22 +193,47 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
           .eq("id", g.id).eq("claimed_at", g.claimed_at);
       } catch { imageUrls[i] = ""; driveUrls[i] = ""; } // truly unpersistable → count as failed
     }
+    return b64;
   };
 
-  // Generate pending slots IN PARALLEL (a pool). Sequential generation was the
-  // main slowness. Safe: one worker per job (lane cap + claim) + per-slot atomic
-  // writes. POOL caps concurrent Vertex calls per worker. A lane stops pulling new
-  // slots once the budget is spent; in-flight ones finish, the rest go next pass.
   const POOL = Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
   const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i]);
-  let cursor = 0;
-  const lane = async (): Promise<void> => {
-    while (cursor < pending.length) {
-      if (Date.now() - t0 > BUDGET_MS) return;
-      await processSlot(pending[cursor++]); // cursor read+increment is atomic in JS
+
+  // ONE consistent model across the whole series (on-model categories): establish
+  // an ANCHOR shot (the new model + product), then generate every other angle FROM
+  // that anchor so it's the SAME person in all of them. Object items don't need this.
+  let anchorPart: GeminiImagePart | null = null;
+  if (cat.onModel && pending.length > 0) {
+    const existingIdx = imageUrls.findIndex((u) => !!u); // an anchor from a prior pass?
+    if (existingIdx >= 0) {
+      const b = await downloadImageBase64(`${g.user_id}/${g.id}/${existingIdx + 1}.jpg`);
+      if (b) anchorPart = { inline_data: { mime_type: "image/jpeg", data: b } };
     }
-  };
-  await Promise.all(Array.from({ length: Math.min(POOL, pending.length) }, lane));
+    if (!anchorPart) {
+      // No anchor yet → make the first pending slot the anchor (fresh model), then
+      // the rest follow it. Done before the pool so others can reference it.
+      const aIdx = pending.shift() as number;
+      const ab64 = await processSlot(aIdx, null);
+      if (ab64) anchorPart = { inline_data: { mime_type: "image/jpeg", data: ab64 } };
+    }
+  }
+
+  // For on-model items, NEVER generate non-anchor angles without an anchor — that
+  // would produce inconsistent models. If the anchor couldn't be made this pass
+  // (e.g. 429), skip the rest and let the requeue retry the anchor next pass.
+  const canPool = !cat.onModel || !!anchorPart;
+  if (canPool) {
+    // Pool the remaining slots. POOL caps concurrent calls; a lane stops pulling
+    // past the budget (in-flight ones finish, the rest go next pass).
+    let cursor = 0;
+    const lane = async (): Promise<void> => {
+      while (cursor < pending.length) {
+        if (Date.now() - t0 > BUDGET_MS) return;
+        await processSlot(pending[cursor++], anchorPart); // anchorPart null for object → fresh per-angle
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(POOL, pending.length) }, lane));
+  }
 
   // g.passes is this pass's number (claim_generation incremented it atomically).
   const remaining = imageUrls.filter((u) => !u).length;
