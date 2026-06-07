@@ -153,7 +153,7 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
     // Anchored angles get a MINIMAL angle directive (the model/scene come from the
     // anchor image) so the per-angle prompt's own scene can't fight the anchor.
     const base = anchorIn
-      ? `Той самий образ, модель і сцена, що на доданому фото-еталоні. Згенеруй НОВИЙ РАКУРС цього ж кадру: ${angles[i]?.label ?? "інший ракурс"}${angles[i]?.desc ? " — " + angles[i].desc : ""}.`
+      ? `ЦЕ ОКРЕМИЙ, ВІЗУАЛЬНО ІНШИЙ РАКУРС тієї самої моделі, товару й сцени, що на доданому фото-еталоні — НЕ повторюй той самий кадр. Потрібний ракурс: ${angles[i]?.label ?? "інший ракурс"}${angles[i]?.desc ? " — " + angles[i].desc : ""}. ОБОВ'ЯЗКОВО відчутно зміни положення камери та поворот тіла моделі, щоб це був ЯВНО інший кадр (інша орієнтація/крупність), а не копія еталона. Та сама людина, той самий товар і образ.`
       : prompts[i];
     let b64: string | null = null;
     let curPrompt = base;

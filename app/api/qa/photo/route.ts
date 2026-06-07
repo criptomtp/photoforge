@@ -25,7 +25,7 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { generationId?: string; index?: number; action?: string; scene?: string };
+  let body: { generationId?: string; index?: number; action?: string; scene?: string; note?: string };
   try { body = await request.json(); } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }); }
   const { generationId, action } = body;
   const index = Number(body.index);
@@ -85,7 +85,12 @@ export async function POST(request: Request) {
     catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 402 }); }
   }
 
-  const basePrompt = (prompts[index] || `Professional product photo, angle ${index + 1}.`) + sceneSuffix(scene, season);
+  // User correction note (e.g. "straps are thin", "back is plain, no print") —
+  // appended forcefully so the regen fixes exactly what the user flagged.
+  const userNote = (body.note ?? "").toString().trim().slice(0, 600);
+  const basePrompt = (prompts[index] || `Professional product photo, angle ${index + 1}.`)
+    + sceneSuffix(scene, season)
+    + (userNote ? `\n\nВАЖЛИВА ПРИМІТКА КОРИСТУВАЧА — ОБОВ'ЯЗКОВО врахуй і виправ саме це: ${userNote}` : "");
   const instr = imageInstructionsFor(cat, productType, bg);
   let b64: string | null = null;
   let curPrompt = basePrompt;

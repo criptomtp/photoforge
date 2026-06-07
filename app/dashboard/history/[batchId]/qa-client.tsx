@@ -20,6 +20,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
   const [busy, setBusy] = useState<Set<string>>(new Set()); // keys in flight — parallel regen
   const [approved, setApproved] = useState<Record<string, boolean>>({});
   const [sceneBySlot, setSceneBySlot] = useState<Record<string, SceneChoice>>({});
+  const [noteByProduct, setNoteByProduct] = useState<Record<string, string>>({});
   const approvedInit = useRef(false);
 
   const load = useCallback(async () => {
@@ -71,12 +72,13 @@ export default function QAClient({ batchId }: { batchId: string }) {
   async function act(genId: string, index: number, action: "regen" | "delete", scene?: SceneChoice) {
     if (action === "delete" && !confirm("Видалити це фото? Воно також зникне з Google Диску.")) return;
     const key = `${genId}:${index}`;
+    const note = action === "regen" ? (noteByProduct[genId] ?? "") : undefined;
     setBusy((b) => new Set(b).add(key));
     try {
       const res = await fetch("/api/qa/photo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ generationId: genId, index, action, scene }),
+        body: JSON.stringify({ generationId: genId, index, action, scene, note }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -202,6 +204,20 @@ export default function QAClient({ batchId }: { batchId: string }) {
               >✅ ОК і далі →</button>
             )}
           </div>
+        </div>
+
+        {/* Correction note — appended to the prompt on regenerate */}
+        <div>
+          <label className="block text-[#6B6560] text-xs mb-1">
+            📝 Примітка для перегенерації <span className="font-normal">(напр.: «бретельки тонкі», «спина біла без принту») — додається до промту при «↻»</span>
+          </label>
+          <textarea
+            value={noteByProduct[it.id] ?? ""}
+            onChange={(e) => setNoteByProduct((m) => ({ ...m, [it.id]: e.target.value }))}
+            rows={2}
+            placeholder="Що виправити в цьому товарі…"
+            className="w-full bg-[#0C0B0A] border border-[#2A2723] focus:border-[#E8943A] focus:outline-none rounded-lg px-3 py-2 text-sm text-[#F5F0EB] resize-y"
+          />
         </div>
 
         {/* Originals */}
