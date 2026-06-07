@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { category } from "@/lib/categories";
 import { resolveAngles } from "@/lib/angles";
+import { kickWorker } from "@/lib/factory";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -72,6 +73,10 @@ export async function GET(
       slots,
     };
   });
+
+  // Card-mode review keeps the factory running while the user watches: if any
+  // product is still generating, nudge the worker so slots fill in live.
+  if (items.some((i) => i.status === "queued" || i.status === "processing")) await kickWorker(2);
 
   return NextResponse.json({ batchId, items });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 interface Slot { index: number; angle: string; url: string; driveUrl: string }
@@ -20,6 +20,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
   const [busy, setBusy] = useState<Set<string>>(new Set()); // keys in flight — parallel regen
   const [approved, setApproved] = useState<Record<string, boolean>>({});
   const [sceneBySlot, setSceneBySlot] = useState<Record<string, SceneChoice>>({});
+  const approvedInit = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -27,7 +28,12 @@ export default function QAClient({ batchId }: { batchId: string }) {
       const data = await res.json();
       if (Array.isArray(data.items)) {
         setItems(data.items);
-        setApproved(Object.fromEntries(data.items.map((it: Item) => [it.id, !!it.approved])));
+        // Seed approvals from the server ONCE; later polls must not clobber the
+        // user's in-session toggles.
+        if (!approvedInit.current) {
+          setApproved(Object.fromEntries(data.items.map((it: Item) => [it.id, !!it.approved])));
+          approvedInit.current = true;
+        }
       }
     } finally {
       setLoading(false);
@@ -35,6 +41,15 @@ export default function QAClient({ batchId }: { batchId: string }) {
   }, [batchId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Live fill: while anything is still generating, re-poll (the GET also nudges
+  // the worker), so slots appear as they're produced — review while it runs.
+  const anyGenerating = items.some((i) => i.status === "queued" || i.status === "processing");
+  useEffect(() => {
+    if (!anyGenerating) return;
+    const t = setInterval(() => { load(); }, 4000);
+    return () => clearInterval(t);
+  }, [anyGenerating, load]);
 
   // Approval is persisted server-side (so the bulk tab can filter approved SKUs).
   const toggleApprove = async (genId: string) => {
@@ -89,6 +104,14 @@ export default function QAClient({ batchId }: { batchId: string }) {
     }
   }
 
+  // Generate every still-empty slot of a product at once.
+  async function genAllMissing(item: Item) {
+    const empties = item.slots.filter((s) => !s.url);
+    await Promise.all(empties.map((s) =>
+      act(item.id, s.index, "regen", sceneBySlot[`${item.id}:${s.index}`] ?? (item.season ? "seasonal" : (item.onModel ? "free" : "studio")))
+    ));
+  }
+
   if (loading) {
     return <div className="text-[#6B6560] py-16 text-center">Завантаження…</div>;
   }
@@ -114,6 +137,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
           <h1 className="font-heading text-2xl font-bold text-[#F5F0EB] mt-1">Перевірка партії</h1>
           <p className="text-[#6B6560] text-sm mt-0.5">
             {items.length} товарів · ✅ перевірено {totalApproved}/{items.length}
+            {anyGenerating && <span className="text-[#E8943A]"> · 🔄 генерується… (фото доливаються самі)</span>}
           </p>
         </div>
         <button onClick={load} className="bg-[#2A2723] hover:bg-[#373330] text-[#F5F0EB] text-sm px-3 py-2 rounded-lg">
@@ -153,17 +177,31 @@ export default function QAClient({ batchId }: { batchId: string }) {
           <div>
             <p className="text-[#F5F0EB] font-medium">{it.sku || "—"} · {it.productType || "—"}</p>
             <p className="text-[#6B6560] text-xs mt-0.5">
-              {it.done}/{it.total} фото · {it.status === "done" ? "Готово" : it.status === "error" ? "Помилка" : it.status}
+              {it.done}/{it.total} фото · {it.status === "done" ? "Готово" : it.status === "error" ? "Помилка" : it.status === "queued" || it.status === "processing" ? "🔄 генерується…" : it.status}
             </p>
           </div>
-          <button
-            onClick={() => toggleApprove(it.id)}
-            className={`text-sm font-medium px-4 py-2 rounded-lg ${
-              approved[it.id]
-                ? "bg-green-500/20 text-green-400 border border-green-500/40"
-                : "bg-[#2A2723] hover:bg-[#373330] text-[#F5F0EB]"
-            }`}
-          >{approved[it.id] ? "✅ Перевірено" : "Позначити перевіреним"}</button>
+          <div className="flex items-center gap-2 flex-wrap">
+            {it.slots.some((s) => !s.url) && (
+              <button
+                onClick={() => genAllMissing(it)}
+                className="text-sm font-medium px-3 py-2 rounded-lg bg-[#E8943A]/15 text-[#E8943A] border border-[#E8943A]/40 hover:bg-[#E8943A]/25"
+              >↻ Згенерувати всі відсутні ({it.slots.filter((s) => !s.url).length})</button>
+            )}
+            <button
+              onClick={() => toggleApprove(it.id)}
+              className={`text-sm font-medium px-4 py-2 rounded-lg ${
+                approved[it.id]
+                  ? "bg-green-500/20 text-green-400 border border-green-500/40"
+                  : "bg-[#2A2723] hover:bg-[#373330] text-[#F5F0EB]"
+              }`}
+            >{approved[it.id] ? "✅ Перевірено" : "Позначити перевіреним"}</button>
+            {idx < items.length - 1 && (
+              <button
+                onClick={() => { if (!approved[it.id]) toggleApprove(it.id); setIdx((i) => Math.min(items.length - 1, i + 1)); }}
+                className="text-sm font-medium px-4 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white"
+              >✅ ОК і далі →</button>
+            )}
+          </div>
         </div>
 
         {/* Originals */}

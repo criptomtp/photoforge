@@ -2,6 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { CATEGORY_LIST, category, classifyCategory, type CategoryId } from "@/lib/categories";
 
 type Mode = "images" | "both" | "descriptions";
@@ -56,6 +57,7 @@ const mapSeason = (v?: string) => {
 const cell = (r: Row, key?: string) => (key && r[key] != null ? String(r[key]).trim() : "");
 
 export default function BatchPage() {
+  const router = useRouter();
   const [rows, setRows] = useState<Row[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [cols, setCols] = useState<ColMap>({ photos: [] });
@@ -256,7 +258,7 @@ export default function BatchPage() {
     if (pollRef.current) setTimeout(() => poll(id), 3000);
   }
 
-  async function startBatch() {
+  async function startBatch(cards = false) {
     const toRun = validRows.filter(({ i }) => selected.has(i));
     if (toRun.length === 0) return;
     const products = toRun.map(({ r, i }) => {
@@ -291,6 +293,9 @@ export default function BatchPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.batchId) { setPhase("idle"); alert(data.error || "Не вдалося запустити"); return; }
       setBatchId(data.batchId);
+      // Card mode: go straight to the per-article review view (images fill in live
+      // there); the worker keeps running in the background.
+      if (cards) { router.push(`/dashboard/history/${data.batchId}`); return; }
       pollRef.current = true;
       poll(data.batchId);
     } catch {
@@ -577,10 +582,17 @@ export default function BatchPage() {
           )}
 
           {phase !== "running" ? (
-            <button onClick={startBatch} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
-              className="w-full bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-3 rounded-xl transition-colors">
-              {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "Запустити обрані знову" : `Запустити обрані — ${n}`; })()}
-            </button>
+            <div className="space-y-2">
+              <button onClick={() => startBatch(false)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
+                className="w-full bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-3 rounded-xl transition-colors">
+                {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "Запустити обрані знову" : `Запустити обрані — ${n}`; })()}
+              </button>
+              <button onClick={() => startBatch(true)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
+                className="w-full bg-[#161412] border border-[#E8943A]/50 hover:border-[#E8943A] disabled:opacity-40 disabled:cursor-not-allowed text-[#E8943A] font-semibold py-3 rounded-xl transition-colors">
+                🃏 Картковий режим — генерувати + одразу перевіряти
+              </button>
+              <p className="text-[10px] text-[#6B6560] text-center">Картковий режим: відкриває товари по черзі (референс ↔ згенеровані), фото доливаються наживо, одразу одобрюєш/видаляєш і йдеш далі.</p>
+            </div>
           ) : (
             <div className="space-y-3">
               <div className="bg-[#161412] border border-[#2A2723] rounded-xl p-4">
