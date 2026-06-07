@@ -47,18 +47,24 @@ export async function POST(request: Request) {
   // 120s > the 60s Vercel hard-kill, so reaping can never touch a live worker.
   try { await supabaseAdmin.rpc("reap_orphans", { p_stale_seconds: 120, p_max_passes: 5 }); } catch { /* best effort */ }
 
-  // Lanes (concurrent products) tunable via env. Default 1: gemini image is on a
-  // shared quota (DSQ) — bursting many concurrent requests → 429 wall. One job at
-  // a time + paced image starts (see PACE below) rides UNDER the throttle so far
-  // more images actually complete (slower, but reliable).
-  const lanes = Math.max(1, Number(process.env.WORKER_LANES) || 1);
+  // ADAPTIVE speed: a SMALL queue runs fast (more parallel, no pacing — like the
+  // manual card flow); a BIG queue throttles to ride under the shared 429 quota.
+  // gemini image = DSQ → bursts 429, but a small batch's few stragglers are easily
+  // mopped up by retries, so speed wins there.
+  const FAST_MAX = Math.max(1, Number(process.env.WORKER_FAST_MAX) || 12);
+  const { count: pendingCount } = await supabaseAdmin
+    .from("generations").select("id", { count: "exact", head: true })
+    .in("status", ["queued", "processing"]);
+  const fast = (pendingCount ?? 99) <= FAST_MAX;
+  const lanes = fast ? 2 : Math.max(1, Number(process.env.WORKER_LANES) || 1);
+
   const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: lanes, p_max_passes: 5 });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
   if (!g) return NextResponse.json({ idle: true });
 
   const t0 = Date.now();
   try {
-    await processJob(g, t0);
+    await processJob(g, t0, fast);
   } catch (e) {
     // Ownership-guarded: only mark error if WE still hold the claim (a hung
     // worker that lost its row to a stale-reclaim must not stomp the new owner).
@@ -68,11 +74,11 @@ export async function POST(request: Request) {
   }
 
   const { data: more } = await supabaseAdmin.rpc("queue_has_work");
-  if (more === true) await kickWorker(2); // refill up to the lane cap (extras return idle)
+  if (more === true) await kickWorker(lanes); // refill up to the lane cap (extras return idle)
   return NextResponse.json({ ok: true, id: g.id });
 }
 
-async function processJob(g: GenRow, t0: number): Promise<void> {
+async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
   const p: JobParams = g.params ?? {};
   const { apiKey, admin, byok, freeQuota } = await resolveApiKey(g.user_id, p.userEmail);
   const metered = !admin && !byok;
@@ -121,7 +127,7 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
 
   // Pace image-generation starts to a steady rate (no bursts) so we stay under
   // the shared-quota (DSQ) throttle. Tunable via WORKER_PACE_MS.
-  const PACE_MS = Math.max(0, Number(process.env.WORKER_PACE_MS) || 800);
+  const PACE_MS = fast ? 0 : Math.max(0, Number(process.env.WORKER_PACE_MS) || 800);
   let nextStart = 0;
   const pace = async () => {
     const now = Date.now();
@@ -196,7 +202,7 @@ async function processJob(g: GenRow, t0: number): Promise<void> {
     return b64;
   };
 
-  const POOL = Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
+  const POOL = fast ? 5 : Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
   const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i]);
 
   // ONE consistent model across the whole series (on-model categories): establish
