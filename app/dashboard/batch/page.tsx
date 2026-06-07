@@ -120,6 +120,8 @@ export default function BatchPage() {
   type SkuStat = { status: string; done: number; total: number; approved: boolean; batchId: string | null; at: string };
   const [skuStatus, setSkuStatus] = useState<Record<string, SkuStat>>({});
   const [hideDone, setHideDone] = useState(false);
+  const [page, setPage] = useState(0);
+  const [perPage, setPerPage] = useState(50);
   // Category resolution: AI fills keyword gaps; per-row manual override wins.
   const [aiCat, setAiCat] = useState<Record<string, CategoryId>>({});
   const [catOverride, setCatOverride] = useState<Record<number, CategoryId>>({});
@@ -251,15 +253,29 @@ export default function BatchPage() {
   // Rows shown in the table (optionally hiding already-done ones).
   const displayRows = hideDone ? validRows.filter(({ r, i }) => !isDoneSku(skuOf(r, i))) : validRows;
 
-  const allSelected = displayRows.length > 0 && displayRows.every(({ i }) => selected.has(i));
+  // Pagination — the list can be thousands of rows; show one page at a time.
+  const pageCount = Math.max(1, Math.ceil(displayRows.length / perPage));
+  const safePage = Math.min(page, pageCount - 1);
+  const pageRows = displayRows.slice(safePage * perPage, safePage * perPage + perPage);
+
+  const allSelected = pageRows.length > 0 && pageRows.every(({ i }) => selected.has(i));
   function toggleRow(i: number) {
     setSelected((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; });
   }
-  function toggleAll() {
-    setSelected(allSelected ? new Set() : new Set(displayRows.map(({ i }) => i)));
+  function toggleAll() { // selects/clears the CURRENT page
+    setSelected((s) => {
+      const n = new Set(s);
+      if (allSelected) pageRows.forEach(({ i }) => n.delete(i));
+      else pageRows.forEach(({ i }) => n.add(i));
+      return n;
+    });
   }
   function selectNotDone() {
     setSelected(new Set(validRows.filter(({ r, i }) => !isDoneSku(skuOf(r, i))).map(({ i }) => i)));
+  }
+  // Pick the first N of the currently-shown (filtered) list — no clicking 500 boxes.
+  function selectFirst(n: number) {
+    setSelected(new Set(displayRows.slice(0, Math.min(n, displayRows.length)).map(({ i }) => i)));
   }
 
   function rowSeason(r: Row): string {
@@ -482,6 +498,21 @@ export default function BatchPage() {
             </p>
           </div>
 
+          {/* Quick-select toolbar — grab the first N without clicking each box */}
+          {phase !== "running" && (
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span className="text-[#6B6560]">Обрати перші:</span>
+              {[10, 20, 50, 100, 200, 500].map((n) => (
+                <button key={n} type="button" onClick={() => selectFirst(n)} disabled={displayRows.length === 0}
+                  className="px-2.5 py-1 rounded border border-[#2A2723] bg-[#161412] text-[#F5F0EB] hover:border-[#E8943A] disabled:opacity-40">
+                  {n}
+                </button>
+              ))}
+              <button type="button" onClick={() => setSelected(new Set())} className="px-2.5 py-1 rounded text-[#6B6560] hover:text-red-400">Очистити</button>
+              <span className="text-[#6B6560] ml-1">(макс 500 за раз)</span>
+            </div>
+          )}
+
           {/* Selectable products table with live status */}
           <div className="bg-[#161412] border border-[#2A2723] rounded-xl overflow-hidden">
             <div className="max-h-[360px] overflow-auto">
@@ -499,7 +530,7 @@ export default function BatchPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {displayRows.map(({ r, i }) => {
+                  {pageRows.map(({ r, i }) => {
                     const res = resultsBySku[skuOf(r, i)];
                     const urls = res?.urls?.filter(Boolean) ?? [];
                     const active = res?.status === "processing";
@@ -547,6 +578,25 @@ export default function BatchPage() {
                 {rows.length > validRows.length && <span>{rows.length - validRows.length} пропущено</span>}
               </div>
             </div>
+            {/* Pagination */}
+            {displayRows.length > perPage && (
+              <div className="p-2 text-xs text-[#6B6560] border-t border-[#2A2723] flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setPage(Math.max(0, safePage - 1))} disabled={safePage === 0}
+                    className="px-2 py-1 rounded bg-[#1E1C19] hover:bg-[#2A2723] disabled:opacity-40 text-[#F5F0EB]">← Назад</button>
+                  <span>Стор. <span className="text-[#F5F0EB]">{safePage + 1}</span> / {pageCount}</span>
+                  <button type="button" onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))} disabled={safePage >= pageCount - 1}
+                    className="px-2 py-1 rounded bg-[#1E1C19] hover:bg-[#2A2723] disabled:opacity-40 text-[#F5F0EB]">Далі →</button>
+                </div>
+                <label className="flex items-center gap-1.5">
+                  На сторінці:
+                  <select value={perPage} onChange={(e) => { setPerPage(Number(e.target.value)); setPage(0); }}
+                    className="bg-[#161412] border border-[#2A2723] rounded px-2 py-1 text-[#F5F0EB]">
+                    {[25, 50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
           </div>
 
           {/* Options */}
