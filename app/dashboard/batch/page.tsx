@@ -4,6 +4,7 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CATEGORY_LIST, category, classifyCategory, type CategoryId } from "@/lib/categories";
+import { saveUpload, listUploads, getUpload, deleteUpload, type BulkUpload, type BulkUploadMeta } from "@/lib/bulk-store";
 
 type Mode = "images" | "both" | "descriptions";
 type BgChoice = "studio" | "any" | "column";
@@ -65,7 +66,7 @@ export default function BatchPage() {
 
   const [categoryId, setCategoryId] = useState<CategoryId>("clothing");
   const cat = category(categoryId);
-  const [presetId, setPresetId] = useState<string>("quick3");
+  const [presetId, setPresetId] = useState<string>("full");
   const [customAngles, setCustomAngles] = useState<string[]>(category("clothing").presets[0].angles.slice());
   const [mode, setMode] = useState<Mode>("images");
   const [bg, setBg] = useState<BgChoice>("studio");
@@ -79,7 +80,7 @@ export default function BatchPage() {
 
   function onCategory(id: CategoryId) {
     setCategoryId(id);
-    setPresetId("quick3");
+    setPresetId("full");
     setCustomAngles(category(id).presets[0].angles.slice());
   }
 
@@ -151,38 +152,60 @@ export default function BatchPage() {
     } catch { /* ignore */ }
   }, []);
 
-  // On mount: restore the last uploaded sheet + load per-SKU status.
-  const STORE_KEY = "pf_bulk_upload_v1";
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORE_KEY);
-      if (raw) {
-        const d = JSON.parse(raw);
-        if (Array.isArray(d?.rows) && d.rows.length) {
-          // Harden against a corrupt/partial stored cols (photos must be an array).
-          const c: ColMap = { photos: [], ...(d.cols ?? {}) };
-          setRows(d.rows); setHeaders(d.headers ?? []); setCols(c); setFileName(d.fileName ?? "");
-          if (d.aiCat && typeof d.aiCat === "object") setAiCat(d.aiCat);
-          if (d.catOverride && typeof d.catOverride === "object") setCatOverride(d.catOverride);
-          const valid = (d.rows as Row[]).map((r, i) => ({ r, i }))
-            .filter(({ r }) => (c.photos ?? []).some((p) => cell(r, p)) && cell(r, c.product)).map(({ i }) => i);
-          setSelected(new Set(valid));
-          // Only run the AI if we don't already have cached results (avoids a call every reload).
-          if (!d.aiCat || Object.keys(d.aiCat).length === 0) classifyMissing(d.rows as Row[], c);
-        }
-      }
-    } catch { /* ignore */ }
-    loadSkuStatus();
-  }, [loadSkuStatus, classifyMissing]);
+  // Uploads live in IndexedDB (big files OK — localStorage's ~5MB cap was dropping
+  // large new files, so an old upload kept loading). A switcher lets you pick a list.
+  const [uploads, setUploads] = useState<BulkUploadMeta[]>([]);
+  const [currentUploadId, setCurrentUploadId] = useState<string | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Persist the uploaded sheet + category results (best-effort; skip if too big).
+  const applyUpload = useCallback((u: BulkUpload, runAi: boolean) => {
+    const c: ColMap = { photos: [], ...((u.cols as object) ?? {}) };
+    setRows(u.rows as Row[]); setHeaders(u.headers ?? []); setCols(c); setFileName(u.fileName ?? "");
+    setAiCat((u.aiCat as Record<string, CategoryId>) ?? {});
+    setCatOverride((u.catOverride as Record<number, CategoryId>) ?? {});
+    setResultsBySku({}); setPhase("idle"); pollRef.current = false;
+    const valid = (u.rows as Row[]).map((r, i) => ({ r, i }))
+      .filter(({ r }) => (c.photos ?? []).some((p) => cell(r, p)) && cell(r, c.product)).map(({ i }) => i);
+    setSelected(new Set(valid));
+    setCurrentUploadId(u.id);
+    try { localStorage.setItem("pf_bulk_current", u.id); } catch { /* ignore */ }
+    if (runAi && (!u.aiCat || Object.keys(u.aiCat).length === 0)) classifyMissing(u.rows as Row[], c);
+  }, [classifyMissing]);
+
+  async function loadUploadById(id: string) {
+    const u = await getUpload(id);
+    if (u) applyUpload(u, true);
+  }
+
+  // Mount: load the list of uploads + restore the last-used (or newest) one.
   useEffect(() => {
-    if (rows.length === 0) return;
-    try {
-      const s = JSON.stringify({ fileName, headers, cols, rows, aiCat, catOverride });
-      if (s.length < 4_000_000) localStorage.setItem(STORE_KEY, s);
-    } catch { /* quota — ignore */ }
-  }, [rows, headers, cols, fileName, aiCat, catOverride]);
+    (async () => {
+      try {
+        const metas = await listUploads();
+        setUploads(metas);
+        if (metas.length) {
+          let pick = "";
+          try { pick = localStorage.getItem("pf_bulk_current") ?? ""; } catch { /* ignore */ }
+          const id = metas.find((m) => m.id === pick)?.id ?? metas[0].id;
+          const u = await getUpload(id);
+          if (u) applyUpload(u, true);
+        }
+      } catch { /* ignore */ }
+    })();
+    loadSkuStatus();
+  }, [loadSkuStatus, applyUpload]);
+
+  // Persist the current upload (debounced) whenever its data changes.
+  useEffect(() => {
+    if (rows.length === 0 || !currentUploadId) return;
+    const id = currentUploadId; // capture at schedule time → never save under a switched id
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveUpload({ id, fileName, savedAt: Date.now(), rows, headers, cols, aiCat, catOverride })
+        .then(() => listUploads().then(setUploads))
+        .catch(() => { /* ignore */ });
+    }, 800);
+  }, [rows, headers, cols, fileName, aiCat, catOverride, currentUploadId]);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -208,6 +231,12 @@ export default function BatchPage() {
     setSelected(new Set(validIdx));
     setAiCat({});
     setCatOverride({});
+    // Save this upload as a NEW entry in IndexedDB + make it current.
+    const id = (crypto?.randomUUID?.() ?? String(Date.now()));
+    setCurrentUploadId(id);
+    try { localStorage.setItem("pf_bulk_current", id); } catch { /* ignore */ }
+    saveUpload({ id, fileName: f.name, savedAt: Date.now(), rows: json, headers: hdrs, cols: dcols, aiCat: {}, catOverride: {} })
+      .then(() => listUploads().then(setUploads)).catch(() => { /* ignore */ });
     loadSkuStatus();           // refresh which of these SKUs are already done/approved
     classifyMissing(json, dcols); // AI-categorize names the keywords can't place
   }
@@ -386,13 +415,32 @@ export default function BatchPage() {
       </div>
       <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFile} />
 
-      {rows.length > 0 && phase !== "running" && (
-        <div className="flex items-center gap-3 -mt-2 text-xs">
-          <span className="text-[#6B6560]">📄 Файл запам'ятовано — повернешся пізніше й він тут.</span>
-          <button type="button" onClick={() => {
-            try { localStorage.removeItem(STORE_KEY); } catch {}
-            setRows([]); setHeaders([]); setCols({ photos: [] }); setFileName(""); setSelected(new Set()); setResultsBySku({}); setAiCat({}); setCatOverride({});
-          }} className="text-[#6B6560] hover:text-red-400 underline">Забути файл</button>
+      {/* Saved-lists switcher (IndexedDB) */}
+      {uploads.length > 0 && phase !== "running" && (
+        <div className="flex items-center gap-2 -mt-2 text-xs flex-wrap">
+          <span className="text-[#6B6560]">📂 Мої списки:</span>
+          <select
+            value={currentUploadId ?? ""}
+            onChange={(e) => loadUploadById(e.target.value)}
+            className="bg-[#161412] border border-[#2A2723] text-[#F5F0EB] rounded px-2 py-1 max-w-[60vw]"
+          >
+            {uploads.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.fileName} · {u.count} тов. · {new Date(u.savedAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+              </option>
+            ))}
+          </select>
+          {currentUploadId && (
+            <button type="button" onClick={async () => {
+              if (!confirm("Видалити цей список із памʼяті? (Згенеровані фото лишаться в Історії)")) return;
+              const id = currentUploadId;
+              await deleteUpload(id);
+              try { localStorage.removeItem("pf_bulk_current"); } catch { /* ignore */ }
+              const metas = await listUploads(); setUploads(metas);
+              if (metas.length) { await loadUploadById(metas[0].id); }
+              else { setCurrentUploadId(null); setRows([]); setHeaders([]); setCols({ photos: [] }); setFileName(""); setSelected(new Set()); setResultsBySku({}); setAiCat({}); setCatOverride({}); }
+            }} className="text-[#6B6560] hover:text-red-400 underline">🗑 Видалити список</button>
+          )}
         </div>
       )}
 

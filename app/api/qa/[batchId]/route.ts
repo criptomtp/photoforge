@@ -26,7 +26,7 @@ export async function GET(
 
   const { data: rows } = await supabase
     .from("generations")
-    .select("id, sku, status, images_generated, image_urls, drive_urls, params, created_at, approved")
+    .select("id, sku, status, images_generated, image_urls, drive_urls, params, created_at, approved, rejected_slots")
     .eq("batch_id", batchId)
     .eq("user_id", user.id)
     .order("created_at", { ascending: true });
@@ -53,11 +53,13 @@ export async function GET(
     const total = angles.length;
     const imgs = Array.isArray(g.image_urls) ? (g.image_urls as string[]) : [];
     const drv = Array.isArray(g.drive_urls) ? (g.drive_urls as string[]) : [];
+    const rejected = new Set(Array.isArray(g.rejected_slots) ? (g.rejected_slots as number[]) : []);
     const slots = Array.from({ length: total }, (_, i) => ({
       index: i,
       angle: angles[i]?.label ?? `Ракурс ${i + 1}`,
       url: imgs[i] ? (urlByPath.get(pathFor(g.id as string, i)) ?? "") : "",
       driveUrl: drv[i] || "",
+      rejected: rejected.has(i),
     }));
     return {
       id: g.id as string,

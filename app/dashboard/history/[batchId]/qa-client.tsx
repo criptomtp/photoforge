@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
-interface Slot { index: number; angle: string; url: string; driveUrl: string }
+interface Slot { index: number; angle: string; url: string; driveUrl: string; rejected?: boolean }
 interface Item {
   id: string; sku: string; productType: string; status: string;
   done: number; total: number; originals: string[]; slots: Slot[];
@@ -20,7 +20,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
   const [busy, setBusy] = useState<Set<string>>(new Set()); // keys in flight — parallel regen
   const [approved, setApproved] = useState<Record<string, boolean>>({});
   const [sceneBySlot, setSceneBySlot] = useState<Record<string, SceneChoice>>({});
-  const [noteByProduct, setNoteByProduct] = useState<Record<string, string>>({});
+  const [noteBySlot, setNoteBySlot] = useState<Record<string, string>>({}); // per-angle correction note
   const approvedInit = useRef(false);
 
   const load = useCallback(async () => {
@@ -69,10 +69,10 @@ export default function QAClient({ batchId }: { batchId: string }) {
     }
   };
 
-  async function act(genId: string, index: number, action: "regen" | "delete", scene?: SceneChoice) {
+  async function act(genId: string, index: number, action: "regen" | "delete" | "reject" | "unreject", scene?: SceneChoice) {
     if (action === "delete" && !confirm("Видалити це фото? Воно також зникне з Google Диску.")) return;
     const key = `${genId}:${index}`;
-    const note = action === "regen" ? (noteByProduct[genId] ?? "") : undefined;
+    const note = action === "regen" ? (noteBySlot[key] ?? "") : undefined;
     setBusy((b) => new Set(b).add(key));
     try {
       const res = await fetch("/api/qa/photo", {
@@ -89,6 +89,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
         await load();
         return;
       }
+      if (action === "reject" || action === "unreject") { await load(); return; } // server is source of truth
       setItems((prev) => prev.map((it) => {
         if (it.id !== genId) return it;
         const slots = it.slots.map((s) =>
@@ -108,7 +109,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
 
   // Generate every still-empty slot of a product at once.
   async function genAllMissing(item: Item) {
-    const empties = item.slots.filter((s) => !s.url);
+    const empties = item.slots.filter((s) => !s.url && !s.rejected);
     await Promise.all(empties.map((s) =>
       act(item.id, s.index, "regen", sceneBySlot[`${item.id}:${s.index}`] ?? (item.season ? "seasonal" : (item.onModel ? "free" : "studio")))
     ));
@@ -183,11 +184,11 @@ export default function QAClient({ batchId }: { batchId: string }) {
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {it.slots.some((s) => !s.url) && (
+            {it.slots.some((s) => !s.url && !s.rejected) && (
               <button
                 onClick={() => genAllMissing(it)}
                 className="text-sm font-medium px-3 py-2 rounded-lg bg-[#E8943A]/15 text-[#E8943A] border border-[#E8943A]/40 hover:bg-[#E8943A]/25"
-              >↻ Згенерувати всі відсутні ({it.slots.filter((s) => !s.url).length})</button>
+              >↻ Згенерувати всі відсутні ({it.slots.filter((s) => !s.url && !s.rejected).length})</button>
             )}
             <button
               onClick={() => toggleApprove(it.id)}
@@ -204,20 +205,6 @@ export default function QAClient({ batchId }: { batchId: string }) {
               >✅ ОК і далі →</button>
             )}
           </div>
-        </div>
-
-        {/* Correction note — appended to the prompt on regenerate */}
-        <div>
-          <label className="block text-[#6B6560] text-xs mb-1">
-            📝 Примітка для перегенерації <span className="font-normal">(напр.: «бретельки тонкі», «спина біла без принту») — додається до промту при «↻»</span>
-          </label>
-          <textarea
-            value={noteByProduct[it.id] ?? ""}
-            onChange={(e) => setNoteByProduct((m) => ({ ...m, [it.id]: e.target.value }))}
-            rows={2}
-            placeholder="Що виправити в цьому товарі…"
-            className="w-full bg-[#0C0B0A] border border-[#2A2723] focus:border-[#E8943A] focus:outline-none rounded-lg px-3 py-2 text-sm text-[#F5F0EB] resize-y"
-          />
         </div>
 
         {/* Originals */}
@@ -246,14 +233,16 @@ export default function QAClient({ batchId }: { batchId: string }) {
               // On-model default = a real scene (studio + person ref copies the model); object default = studio.
               const scene = sceneBySlot[slotKey] ?? (it.season ? "seasonal" : (it.onModel ? "free" : "studio"));
               return (
-                <div key={s.index} className="space-y-1.5">
+                <div key={s.index} className={`space-y-1.5 ${s.rejected ? "opacity-70" : ""}`}>
                   <div className="aspect-[3/4] rounded-lg overflow-hidden border border-[#2A2723] bg-[#0C0B0A] relative">
                     {isBusy && (
                       <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-[#E8943A] text-xs z-10">
                         Обробка…
                       </div>
                     )}
-                    {s.url ? (
+                    {s.rejected ? (
+                      <div className="w-full h-full flex items-center justify-center text-red-400 text-xs text-center px-2">✕ Відхилено</div>
+                    ) : s.url ? (
                       <a href={s.url} target="_blank" rel="noopener noreferrer" className="block w-full h-full">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={s.url} alt="" className="w-full h-full object-cover" loading="lazy" />
@@ -267,31 +256,55 @@ export default function QAClient({ batchId }: { batchId: string }) {
                   <p className="text-[#6B6560] text-[11px] truncate" title={s.angle}>
                     {s.angle}{s.driveUrl ? " · ☁" : ""}
                   </p>
-                  <select
-                    value={scene}
-                    onChange={(e) => setSceneBySlot((m) => ({ ...m, [slotKey]: e.target.value as SceneChoice }))}
-                    className="w-full bg-[#0C0B0A] border border-[#2A2723] text-[#6B6560] text-[10px] rounded px-1 py-1"
-                    title="Сцена для перегенерації"
-                  >
-                    {(["studio", "seasonal", "free"] as SceneChoice[]).map((sc) => (
-                      <option key={sc} value={sc}>🎬 {SCENE_LABEL[sc]}</option>
-                    ))}
-                  </select>
-                  <div className="flex gap-1">
+
+                  {s.rejected ? (
                     <button
-                      onClick={() => act(it.id, s.index, "regen", scene)}
+                      onClick={() => act(it.id, s.index, "unreject")}
                       disabled={isBusy}
-                      className="flex-1 bg-[#2A2723] hover:bg-[#373330] disabled:opacity-40 text-[#F5F0EB] text-[11px] py-1.5 rounded"
-                    >↻ {s.url ? "Перегенерувати" : "Згенерувати"}</button>
-                    {s.url && (
-                      <button
-                        onClick={() => act(it.id, s.index, "delete")}
-                        disabled={isBusy}
-                        className="bg-red-500/15 hover:bg-red-500/25 disabled:opacity-40 text-red-400 text-[11px] px-2 py-1.5 rounded"
-                        title="Видалити (також з Google Диску)"
-                      >🗑</button>
-                    )}
-                  </div>
+                      className="w-full bg-[#2A2723] hover:bg-[#373330] disabled:opacity-40 text-[#F5F0EB] text-[11px] py-1.5 rounded"
+                    >↩ Повернути</button>
+                  ) : (
+                    <>
+                      <input
+                        value={noteBySlot[slotKey] ?? ""}
+                        onChange={(e) => setNoteBySlot((m) => ({ ...m, [slotKey]: e.target.value }))}
+                        placeholder="✎ що не так у цьому ракурсі…"
+                        className="w-full bg-[#0C0B0A] border border-[#2A2723] focus:border-[#E8943A] focus:outline-none text-[#F5F0EB] text-[10px] rounded px-1.5 py-1"
+                        title="Примітка додається до промту саме цього ракурсу при ↻"
+                      />
+                      <select
+                        value={scene}
+                        onChange={(e) => setSceneBySlot((m) => ({ ...m, [slotKey]: e.target.value as SceneChoice }))}
+                        className="w-full bg-[#0C0B0A] border border-[#2A2723] text-[#6B6560] text-[10px] rounded px-1 py-1"
+                        title="Сцена для перегенерації"
+                      >
+                        {(["studio", "seasonal", "free"] as SceneChoice[]).map((sc) => (
+                          <option key={sc} value={sc}>🎬 {SCENE_LABEL[sc]}</option>
+                        ))}
+                      </select>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => act(it.id, s.index, "regen", scene)}
+                          disabled={isBusy}
+                          className="flex-1 bg-[#2A2723] hover:bg-[#373330] disabled:opacity-40 text-[#F5F0EB] text-[11px] py-1.5 rounded"
+                        >↻ {s.url ? "Перегенерувати" : "Згенерувати"}</button>
+                        {s.url && (
+                          <button
+                            onClick={() => act(it.id, s.index, "delete")}
+                            disabled={isBusy}
+                            className="bg-red-500/15 hover:bg-red-500/25 disabled:opacity-40 text-red-400 text-[11px] px-2 py-1.5 rounded"
+                            title="Видалити (також з Google Диску)"
+                          >🗑</button>
+                        )}
+                        <button
+                          onClick={() => act(it.id, s.index, "reject")}
+                          disabled={isBusy}
+                          className="bg-[#2A2723] hover:bg-red-500/20 disabled:opacity-40 text-[#6B6560] hover:text-red-400 text-[11px] px-2 py-1.5 rounded"
+                          title="Відхилити: цей кадр неможливо згенерувати (не рахувати як відсутній)"
+                        >✕</button>
+                      </div>
+                    </>
+                  )}
                 </div>
               );
             })}

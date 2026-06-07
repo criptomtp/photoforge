@@ -29,12 +29,12 @@ export async function POST(request: Request) {
   try { body = await request.json(); } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }); }
   const { generationId, action } = body;
   const index = Number(body.index);
-  if (!generationId || !Number.isInteger(index) || index < 0 || !["regen", "delete"].includes(action ?? ""))
+  if (!generationId || !Number.isInteger(index) || index < 0 || !["regen", "delete", "reject", "unreject"].includes(action ?? ""))
     return NextResponse.json({ error: "bad params" }, { status: 400 });
 
   const { data: g } = await supabaseAdmin
     .from("generations")
-    .select("id, user_id, params, prompts, drive_urls, drive_folder_id")
+    .select("id, user_id, params, prompts, drive_urls, drive_folder_id, rejected_slots")
     .eq("id", generationId).single();
   if (!g || g.user_id !== user.id) return NextResponse.json({ error: "not found" }, { status: 404 });
 
@@ -48,6 +48,8 @@ export async function POST(request: Request) {
   const path = `${g.user_id}/${g.id}/${index + 1}.jpg`;
   const oldDriveId = driveFileId(driveUrls[index]);
 
+  const rejectedSlots: number[] = Array.isArray(g.rejected_slots) ? (g.rejected_slots as number[]) : [];
+
   // ── delete ───────────────────────────────────────────────────────────────
   if (action === "delete") {
     if (oldDriveId) {
@@ -57,6 +59,21 @@ export async function POST(request: Request) {
     await removeImage(path);
     await supabaseAdmin.rpc("qa_set_slot", { p_gen_id: g.id, p_index: index, p_image_url: "", p_drive_url: "" });
     return NextResponse.json({ ok: true, action: "delete", index });
+  }
+
+  // ── reject (can't generate this angle) / unreject ──────────────────────────
+  if (action === "reject" || action === "unreject") {
+    if (action === "reject") {
+      // also clear any existing image for this slot (storage + Drive)
+      if (oldDriveId) { const token = await getAccessToken(user.id).catch(() => null); if (token) await deleteDriveFile(token, oldDriveId); }
+      await removeImage(path);
+      await supabaseAdmin.rpc("qa_set_slot", { p_gen_id: g.id, p_index: index, p_image_url: "", p_drive_url: "" });
+    }
+    const next = action === "reject"
+      ? Array.from(new Set([...rejectedSlots, index]))
+      : rejectedSlots.filter((x) => x !== index);
+    await supabaseAdmin.from("generations").update({ rejected_slots: next }).eq("id", g.id).eq("user_id", user.id);
+    return NextResponse.json({ ok: true, action, index });
   }
 
   // ── regen ──────────────────────────────────────────────────────────────

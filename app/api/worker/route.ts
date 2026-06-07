@@ -28,6 +28,7 @@ interface GenRow {
   drive_folder_id: string | null; listing: unknown;
   claimed_at: string | null; // ownership token — claim_generation sets it to now()
   passes: number | null;     // how many worker passes this job has had
+  rejected_slots: number[] | null; // angles the user gave up on — skip them
 }
 
 function urlsOfLength(arr: unknown, n: number): string[] {
@@ -203,7 +204,8 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
   };
 
   const POOL = fast ? 5 : Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
-  const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i]);
+  const rejectedSet = new Set(Array.isArray(g.rejected_slots) ? g.rejected_slots : []);
+  const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i] && !rejectedSet.has(i));
 
   // ONE consistent model across the whole series (on-model categories): establish
   // an ANCHOR shot (the new model + product), then generate every other angle FROM
@@ -242,7 +244,8 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
   }
 
   // g.passes is this pass's number (claim_generation incremented it atomically).
-  const remaining = imageUrls.filter((u) => !u).length;
+  // Rejected slots are intentionally empty — don't count them as "remaining".
+  const remaining = imageUrls.filter((u, i) => !u && !rejectedSet.has(i)).length;
   if (remaining > 0 && (g.passes ?? 1) < MAX_PASSES) {
     // Slots still to do — either untried (budget ran out) or failed and worth a
     // retry (a 429 is usually transient and FREE). Hand off via the queue for a
