@@ -111,17 +111,17 @@ export async function POST(request: Request) {
   const instr = imageInstructionsFor(cat, productType, bg);
   let b64: string | null = null;
   let curPrompt = basePrompt;
-  // 18s per-attempt × 3 fits inside the 60s cap (safety/429 fail fast). On a
-  // SAFETY block, VARY the prompt for the next try; on 429/timeout, retry as-is.
-  for (let a = 1; a <= 3; a++) {
+  // More attempts (429 rejects fast) so a manual regen has more chances to slip
+  // through the shared quota; 13s × up to 4 still fits the 60s cap. On a SAFETY/
+  // empty block VARY the prompt; on 429/timeout retry as-is.
+  for (let a = 1; a <= 4; a++) {
     try {
-      b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, instr, 18_000);
+      b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, instr, 13_000);
       break;
     } catch (e) {
       const msg = String(e);
-      // No image (policy block OR empty) → vary the prompt. 429/timeout → retry as-is.
-      if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(basePrompt, a - 1); continue; }
-      if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3000 : 600));
+      if (a < 4 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(basePrompt, a - 1); continue; }
+      if (a < 4) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 2000 : 500));
     }
   }
   if (!b64) {
