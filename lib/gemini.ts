@@ -358,11 +358,9 @@ export async function generatePrompts(
   const N = angles.length;
   const imageParts = referenceImages.map((img) => ({ inline_data: img.inline_data }));
 
-  // ON-MODEL items ALWAYS use a real scene: a plain studio bg + a person
-  // reference makes gemini reproduce the reference PERSON (validated regression).
-  // A real scene forces it to recompose → a fresh model. Clean studio is only for
-  // non-wearable product shots.
-  const bg: BgMode = cat.onModel ? "lifestyle" : (season ? "lifestyle" : "catalog");
+  // Honor the user's background choice: a season → real lifestyle scene; no season
+  // (studio) → clean catalog. (Drives {BG_RULE} + the scene line below.)
+  const bg: BgMode = season ? "lifestyle" : "catalog";
 
   const genderLine = cat.onModel
     ? `Цільова аудиторія / Gender: ${gender || "обери доречний для товару"}\n`

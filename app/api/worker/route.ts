@@ -1,9 +1,9 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { resolveApiKey, refundTokens, restoreFreeGeneration } from "@/lib/tokens";
 import {
-  generatePrompts, generateImage, imageInstructionsFor, generateListing, varyForSafety, anchorInstructions, type GeminiImagePart,
+  generatePrompts, generateImage, imageInstructionsFor, generateListing, varyForSafety, type GeminiImagePart,
 } from "@/lib/gemini";
-import { ensureBucket, uploadImage, downloadImageBase64 } from "@/lib/supabase/storage";
+import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveAngles, qualityTier, refundForRun } from "@/lib/angles";
 import { category } from "@/lib/categories";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
@@ -88,8 +88,8 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
   if (angles.length === 0) angles = [...cat.angles]; // angleIds didn't match this category → use its full set
   const N = angles.length;
   const season = p.season ?? "";
-  // On-model → always a real scene (studio + person reference = copied model).
-  const bg = cat.onModel ? "lifestyle" : (season ? "lifestyle" : "catalog");
+  // Honor the user's choice: studio → clean catalog bg; any/seasonal → real scene.
+  const bg = season ? "lifestyle" : "catalog";
   const productType = (p.productType || p.name || "").trim();
   const tier = qualityTier(p.quality);
 
@@ -145,43 +145,38 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
     /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? "черга (429)" :
     /timeout|aborted|abort/i.test(msg) ? "таймаут" : "помилка";
 
-  // Generate one slot. anchorIn != null → reproduce the SAME model+product from
-  // that anchor image at a new angle (consistency); null → fresh shot from the
-  // product reference (this IS how the anchor itself is made). Returns the b64.
-  const processSlot = async (i: number, anchorIn: GeminiImagePart | null): Promise<string | null> => {
-    const refsForCall = anchorIn ? [anchorIn] : refs;
-    const instr = anchorIn ? anchorInstructions() : imageInstructionsFor(cat, productType, bg);
-    // Anchored angles use the FULL rich per-angle prompt (varied pose/scene/crop) —
-    // the anchor image supplies ONLY the model's identity. This keeps ONE model
-    // across the set WITHOUT flattening every shot into the same scene.
-    const base = prompts[i];
+  // Generate one slot INDEPENDENTLY from its own rich per-angle prompt (the Make
+  // approach) — each angle is a distinct, dynamic shot (a real close-up for the
+  // "detail" angle, a true 3/4, etc.). The same word-for-word character sheet in
+  // every prompt keeps the model consistent. (No anchor — that flattened the set.)
+  const processSlot = async (i: number): Promise<void> => {
     let b64: string | null = null;
-    let curPrompt = base;
+    let curPrompt = prompts[i];
     let lastErr = "";
     for (let a = 1; a <= 3; a++) {
       await pace(); // steady rate, no bursts → fewer 429 on the shared quota
       try {
-        b64 = await generateImage(apiKey, curPrompt, refsForCall, tier.model, tier.location, instr);
+        b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
         break;
       } catch (e) {
         const msg = String(e); lastErr = msg;
         // No image returned (policy block OR empty result) → re-sending the same
         // prompt is futile; VARY it. 429/timeout = the prompt is fine → back off.
-        if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(base, a - 1); continue; }
+        if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
         if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3500 * a : 600));
       }
     }
-    if (!b64) { failTags[i] = tagOf(lastErr); return null; } // failed → retried next pass (bounded by MAX_PASSES)
+    if (!b64) { failTags[i] = tagOf(lastErr); return; } // failed → retried next pass (bounded by MAX_PASSES)
     try {
       imageUrls[i] = await uploadImage(b64, `${g.user_id}/${g.id}/${i + 1}.jpg`);
       if (driveToken && driveFolderId) {
         try {
-          const base = (p.sku || productType || "img").replace(/[^\wЀ-ӿ.\-]+/g, "_").slice(0, 80);
-          const up = await uploadFileToDrive(driveToken, driveFolderId, `${base}_${i + 1}.jpg`, b64);
+          const fbase = (p.sku || productType || "img").replace(/[^\wЀ-ӿ.\-]+/g, "_").slice(0, 80);
+          const up = await uploadFileToDrive(driveToken, driveFolderId, `${fbase}_${i + 1}.jpg`, b64);
           driveUrls[i] = up.webViewLink;
         } catch { /* keep storage URL */ }
       }
-    } catch { return null; /* upload failed → slot stays empty */ }
+    } catch { return; /* upload failed → slot stays empty */ }
     // Atomic per-slot write (FOR UPDATE serializes parallel writes on this row).
     let saved = false;
     for (let s = 0; s < 2 && !saved; s++) {
@@ -199,48 +194,22 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
           .eq("id", g.id).eq("claimed_at", g.claimed_at);
       } catch { imageUrls[i] = ""; driveUrls[i] = ""; } // truly unpersistable → count as failed
     }
-    return b64;
   };
 
   const POOL = fast ? 5 : Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
   const rejectedSet = new Set(Array.isArray(g.rejected_slots) ? g.rejected_slots : []);
   const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i] && !rejectedSet.has(i));
 
-  // ONE consistent model across the whole series (on-model categories): establish
-  // an ANCHOR shot (the new model + product), then generate every other angle FROM
-  // that anchor so it's the SAME person in all of them. Object items don't need this.
-  let anchorPart: GeminiImagePart | null = null;
-  if (cat.onModel && pending.length > 0) {
-    const existingIdx = imageUrls.findIndex((u) => !!u); // an anchor from a prior pass?
-    if (existingIdx >= 0) {
-      const b = await downloadImageBase64(`${g.user_id}/${g.id}/${existingIdx + 1}.jpg`);
-      if (b) anchorPart = { inline_data: { mime_type: "image/jpeg", data: b } };
+  // Pool the slots. POOL caps concurrent calls; a lane stops pulling past the
+  // budget (in-flight ones finish, the rest go next pass).
+  let cursor = 0;
+  const lane = async (): Promise<void> => {
+    while (cursor < pending.length) {
+      if (Date.now() - t0 > BUDGET_MS) return;
+      await processSlot(pending[cursor++]);
     }
-    if (!anchorPart) {
-      // No anchor yet → make the first pending slot the anchor (fresh model), then
-      // the rest follow it. Done before the pool so others can reference it.
-      const aIdx = pending.shift() as number;
-      const ab64 = await processSlot(aIdx, null);
-      if (ab64) anchorPart = { inline_data: { mime_type: "image/jpeg", data: ab64 } };
-    }
-  }
-
-  // For on-model items, NEVER generate non-anchor angles without an anchor — that
-  // would produce inconsistent models. If the anchor couldn't be made this pass
-  // (e.g. 429), skip the rest and let the requeue retry the anchor next pass.
-  const canPool = !cat.onModel || !!anchorPart;
-  if (canPool) {
-    // Pool the remaining slots. POOL caps concurrent calls; a lane stops pulling
-    // past the budget (in-flight ones finish, the rest go next pass).
-    let cursor = 0;
-    const lane = async (): Promise<void> => {
-      while (cursor < pending.length) {
-        if (Date.now() - t0 > BUDGET_MS) return;
-        await processSlot(pending[cursor++], anchorPart); // anchorPart null for object → fresh per-angle
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(POOL, pending.length) }, lane));
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(POOL, pending.length) }, lane));
 
   // g.passes is this pass's number (claim_generation incremented it atomically).
   // Rejected slots are intentionally empty — don't count them as "remaining".
