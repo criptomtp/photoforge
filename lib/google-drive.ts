@@ -2,7 +2,10 @@ import { encrypt, decrypt } from "./crypto";
 import { supabaseAdmin as admin } from "./supabase/admin";
 
 const SCOPES = [
-  "https://www.googleapis.com/auth/drive.file",
+  // Full Drive: needed to LIST the user's existing folders for the picker and to
+  // write into a folder they didn't create via the app. (drive.file only sees
+  // app-created files.) Re-consent required when this changes.
+  "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/spreadsheets.readonly",
 ].join(" ");
 

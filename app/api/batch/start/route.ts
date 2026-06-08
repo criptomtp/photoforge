@@ -19,7 +19,7 @@ interface ProductIn {
 interface StartBody {
   products: ProductIn[];
   category?: string; quality?: string; mode?: "images" | "both";
-  angleIds?: string[]; drive?: boolean; driveFolderName?: string;
+  angleIds?: string[]; drive?: boolean; driveFolderName?: string; driveParentId?: string;
 }
 
 export async function POST(request: Request) {
@@ -42,12 +42,17 @@ export async function POST(request: Request) {
   const tier = qualityTier(body.quality);
   const batchId = randomUUID();
 
-  // Create the parent Drive folder once (so products nest under it).
+  // Parent Drive folder: either a folder the user PICKED from the tree, or create
+  // a new one from the typed name. Products nest under it.
   let driveParentId: string | undefined;
-  if (body.drive && body.driveFolderName?.trim()) {
-    const token = await getAccessToken(user.id).catch(() => null);
-    if (token) {
-      try { driveParentId = (await createDriveFolder(token, body.driveFolderName.trim().slice(0, 100))).id; } catch { /* ignore */ }
+  if (body.drive) {
+    if (body.driveParentId && /^[-\w]+$/.test(body.driveParentId)) {
+      driveParentId = body.driveParentId; // picked existing folder
+    } else if (body.driveFolderName?.trim()) {
+      const token = await getAccessToken(user.id).catch(() => null);
+      if (token) {
+        try { driveParentId = (await createDriveFolder(token, body.driveFolderName.trim().slice(0, 100))).id; } catch { /* ignore */ }
+      }
     }
   }
 

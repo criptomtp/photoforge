@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CATEGORY_LIST, category, classifyCategory, type CategoryId } from "@/lib/categories";
 import { saveUpload, listUploads, getUpload, deleteUpload, type BulkUpload, type BulkUploadMeta } from "@/lib/bulk-store";
+import FolderPicker from "./folder-picker";
 
 type Mode = "images" | "both" | "descriptions";
 type BgChoice = "studio" | "any" | "column";
@@ -72,6 +73,9 @@ export default function BatchPage() {
   const [bg, setBg] = useState<BgChoice>("studio");
   const [drive, setDrive] = useState(true);
   const [driveFolder, setDriveFolder] = useState("PhotoForge");
+  const [drivePickedId, setDrivePickedId] = useState<string | null>(null);
+  const [drivePickedLabel, setDrivePickedLabel] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const isCustomAngles = presetId === "custom";
   const selectedAngles = isCustomAngles
@@ -340,7 +344,9 @@ export default function BatchPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           products, category: categoryId, quality: "standard", mode,
-          angleIds: selectedAngles, drive, driveFolderName: drive ? driveFolder.trim() : "",
+          angleIds: selectedAngles, drive,
+          driveParentId: drive ? (drivePickedId ?? undefined) : undefined,
+          driveFolderName: drive && !drivePickedId ? driveFolder.trim() : "",
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -681,10 +687,24 @@ export default function BatchPage() {
           {mode !== "descriptions" && drive && (
             <div>
               <label className="block text-xs text-[#6B6560] mb-1">📁 Папка на Google Drive</label>
-              <input type="text" value={driveFolder} onChange={(e) => setDriveFolder(e.target.value)} disabled={phase === "running"}
-                placeholder="PhotoForge" className="w-full sm:w-80 bg-[#0C0B0A] border border-[#2A2723] rounded px-3 py-2 text-sm text-[#F5F0EB] focus:border-[#E8943A] focus:outline-none" />
+              <div className="flex items-center gap-2 flex-wrap">
+                <button type="button" onClick={() => setPickerOpen(true)} disabled={phase === "running"}
+                  className="bg-[#161412] border border-[#2A2723] hover:border-[#E8943A] rounded px-3 py-2 text-sm text-[#F5F0EB]">
+                  📂 Обрати папку з Диска…
+                </button>
+                <span className="text-sm text-[#8B857F]">
+                  {drivePickedId ? <>Обрано: <span className="text-[#E8943A]">{drivePickedLabel}</span></> : <>або нова папка: <input type="text" value={driveFolder} onChange={(e) => setDriveFolder(e.target.value)} disabled={phase === "running"} placeholder="PhotoForge" className="bg-[#0C0B0A] border border-[#2A2723] rounded px-2 py-1 text-sm text-[#F5F0EB] w-44 focus:border-[#E8943A] focus:outline-none" /></>}
+                </span>
+                {drivePickedId && <button type="button" onClick={() => { setDrivePickedId(null); setDrivePickedLabel(""); }} className="text-xs text-[#6B6560] hover:text-red-400 underline">скинути</button>}
+              </div>
               <p className="text-[10px] text-[#6B6560] mt-1">Усі товари ляжуть у цю папку, кожен — у підпапку зі своїм артикулом.</p>
             </div>
+          )}
+          {pickerOpen && (
+            <FolderPicker
+              onClose={() => setPickerOpen(false)}
+              onPick={(id, label) => { setDrivePickedId(id); setDrivePickedLabel(label); setPickerOpen(false); }}
+            />
           )}
 
           {phase !== "running" ? (
