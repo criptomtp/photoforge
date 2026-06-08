@@ -315,7 +315,7 @@ export default function BatchPage() {
     loadSkuStatus();
   }
 
-  async function startBatch(cards = false) {
+  async function startBatch(cards = false, draft = false) {
     const toRun = validRows.filter(({ i }) => selected.has(i));
     if (toRun.length === 0) return;
     const products = toRun.map(({ r, i }) => {
@@ -344,7 +344,7 @@ export default function BatchPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           products, category: categoryId, quality: "standard", mode,
-          angleIds: selectedAngles, drive,
+          angleIds: selectedAngles, drive, draft,
           driveParentId: drive ? (drivePickedId ?? undefined) : undefined,
           driveFolderName: drive && !drivePickedId ? driveFolder.trim() : "",
         }),
@@ -352,9 +352,9 @@ export default function BatchPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.batchId) { setPhase("idle"); alert(data.error || "Не вдалося запустити"); return; }
       setBatchId(data.batchId);
-      // Card mode: go straight to the per-article review view (images fill in live
-      // there); the worker keeps running in the background.
-      if (cards) { router.push(`/dashboard/history/${data.batchId}`); return; }
+      // Card / stepwise mode: go straight to the per-article view (live fill for
+      // cards; draft = generate each product on demand there).
+      if (cards || draft) { router.push(`/dashboard/history/${data.batchId}`); return; }
       pollRef.current = true;
       poll(data.batchId);
     } catch {
@@ -713,11 +713,15 @@ export default function BatchPage() {
                 className="w-full bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-3 rounded-xl transition-colors">
                 {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "Запустити обрані знову" : `Запустити обрані — ${n}`; })()}
               </button>
-              <button onClick={() => startBatch(true)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
+              <button onClick={() => startBatch(false, true)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
                 className="w-full bg-[#161412] border border-[#E8943A]/50 hover:border-[#E8943A] disabled:opacity-40 disabled:cursor-not-allowed text-[#E8943A] font-semibold py-3 rounded-xl transition-colors">
-                🃏 Картковий режим — генерувати + одразу перевіряти
+                🃏 Поступово (по черзі) — натискаєш «Згенерувати» на кожному товарі сам
               </button>
-              <p className="text-[10px] text-[#6B6560] text-center">Картковий режим: відкриває товари по черзі (референс ↔ згенеровані), фото доливаються наживо, одразу одобрюєш/видаляєш і йдеш далі.</p>
+              <button onClick={() => startBatch(true)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
+                className="w-full bg-[#161412] border border-[#2A2723] hover:border-[#E8943A] disabled:opacity-40 disabled:cursor-not-allowed text-[#8B857F] hover:text-[#E8943A] text-sm font-medium py-2.5 rounded-xl transition-colors">
+                ⚡ Картковий «усі одразу» — поставити всі в чергу + переглядати
+              </button>
+              <p className="text-[10px] text-[#6B6560] text-center">«Поступово» (рекомендую при черзі 429): товари відкриваються по черзі, генеруєш кожен окремо своєю кнопкою, перевіряєш, тиснеш «ОК і далі». «Усі одразу» — ставить усе в чергу й доливає наживо.</p>
             </div>
           ) : (
             <div className="space-y-3">

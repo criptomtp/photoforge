@@ -19,7 +19,7 @@ interface ProductIn {
 interface StartBody {
   products: ProductIn[];
   category?: string; quality?: string; mode?: "images" | "both";
-  angleIds?: string[]; drive?: boolean; driveFolderName?: string; driveParentId?: string;
+  angleIds?: string[]; drive?: boolean; driveFolderName?: string; driveParentId?: string; draft?: boolean;
 }
 
 export async function POST(request: Request) {
@@ -56,6 +56,7 @@ export async function POST(request: Request) {
     }
   }
 
+  const draft = !!body.draft; // step-by-step card mode: enqueue but don't process yet
   let queued = 0;
   for (const pr of products) {
     // Per-product category + angles (auto-detected on the client; fall back to
@@ -76,9 +77,12 @@ export async function POST(request: Request) {
     const { data: gen, error } = await supabaseAdmin.from("generations").insert({
       user_id: user.id, batch_id: batchId, sku: pr.sku ?? null, category: pcat.id,
       product_type: params.productType, season: pr.season ?? "", gender: pr.gender ?? "",
-      status: "queued", params, image_urls: [],
+      status: draft ? "draft" : "queued", params, image_urls: [],
     }).select("id").single();
     if (error || !gen) continue;
+
+    // Draft: reserve tokens later, when the user actually generates it. Just count.
+    if (draft) { queued++; continue; }
 
     // Charge up-front (worker refunds failures). Admin/BYOK free.
     if (metered && !freeQuota) {
@@ -95,6 +99,6 @@ export async function POST(request: Request) {
     }
   }
 
-  await kickWorker(3); // awaited so the spawn isn't dropped when this handler returns
+  if (!draft) await kickWorker(3); // drafts wait for the user to trigger each one
   return NextResponse.json({ batchId, queued, total: products.length });
 }

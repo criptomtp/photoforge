@@ -115,6 +115,22 @@ export default function QAClient({ batchId }: { batchId: string }) {
     ));
   }
 
+  // Step-by-step mode: trigger a DRAFT product (worker generates all its angles).
+  async function genProduct(genId: string) {
+    const key = `gen:${genId}`;
+    setBusy((b) => new Set(b).add(key));
+    try {
+      const res = await fetch(`/api/batch/${batchId}/generate-one`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generationId: genId }),
+      });
+      const d = await res.json();
+      if (!res.ok) { alert(d.error || "Не вдалося запустити"); return; }
+      await load(); // status → queued → live poll kicks in
+    } catch { await load(); }
+    finally { setBusy((b) => { const n = new Set(b); n.delete(key); return n; }); }
+  }
+
   if (loading) {
     return <div className="text-[#6B6560] py-16 text-center">Завантаження…</div>;
   }
@@ -189,11 +205,17 @@ export default function QAClient({ batchId }: { batchId: string }) {
           <div>
             <p className="text-[#F5F0EB] font-medium">{it.sku || "—"} · {it.productType || "—"}</p>
             <p className="text-[#6B6560] text-xs mt-0.5">
-              {it.done}/{it.total} фото · {it.status === "done" ? "Готово" : it.status === "error" ? "Помилка" : it.status === "queued" || it.status === "processing" ? "🔄 генерується…" : it.status}
+              {it.done}/{it.total} фото · {it.status === "draft" ? "⬜ не згенеровано" : it.status === "done" ? "Готово" : it.status === "error" ? "Помилка" : it.status === "queued" || it.status === "processing" ? "🔄 генерується…" : it.status}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {it.slots.some((s) => !s.url && !s.rejected) && (
+            {it.status === "draft" ? (
+              <button
+                onClick={() => genProduct(it.id)}
+                disabled={busy.has(`gen:${it.id}`)}
+                className="text-sm font-semibold px-4 py-2 rounded-lg bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-50 text-[#0C0B0A]"
+              >▶ Згенерувати всі ракурси ({it.total})</button>
+            ) : it.slots.some((s) => !s.url && !s.rejected) && (
               <button
                 onClick={() => genAllMissing(it)}
                 className="text-sm font-medium px-3 py-2 rounded-lg bg-[#E8943A]/15 text-[#E8943A] border border-[#E8943A]/40 hover:bg-[#E8943A]/25"
