@@ -143,9 +143,18 @@ export default function QAClient({ batchId }: { batchId: string }) {
             {anyGenerating && <span className="text-[#E8943A]"> · 🔄 генерується… (фото доливаються самі)</span>}
           </p>
         </div>
-        <button onClick={load} className="bg-[#2A2723] hover:bg-[#373330] text-[#F5F0EB] text-sm px-3 py-2 rounded-lg">
-          ↻ Оновити
-        </button>
+        <div className="flex items-center gap-2">
+          {anyGenerating && (
+            <button onClick={async () => {
+              if (!confirm("Скасувати генерацію цієї партії?")) return;
+              try { await fetch(`/api/batch/${batchId}/cancel`, { method: "POST" }); } catch { /* ignore */ }
+              await load();
+            }} className="bg-red-500/15 hover:bg-red-500/25 text-red-400 text-sm px-3 py-2 rounded-lg">⛔ Скасувати</button>
+          )}
+          <button onClick={load} className="bg-[#2A2723] hover:bg-[#373330] text-[#F5F0EB] text-sm px-3 py-2 rounded-lg">
+            ↻ Оновити
+          </button>
+        </div>
       </div>
 
       {/* Product navigation */}

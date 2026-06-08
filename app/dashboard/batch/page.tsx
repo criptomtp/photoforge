@@ -303,6 +303,14 @@ export default function BatchPage() {
     if (pollRef.current) setTimeout(() => poll(id), 3000);
   }
 
+  async function cancelBatch() {
+    if (!batchId || !confirm("Скасувати цю генерацію? Незавершені товари зупиняться.")) return;
+    pollRef.current = false;
+    try { await fetch(`/api/batch/${batchId}/cancel`, { method: "POST" }); } catch { /* ignore */ }
+    setPhase("done");
+    loadSkuStatus();
+  }
+
   async function startBatch(cards = false) {
     const toRun = validRows.filter(({ i }) => selected.has(i));
     if (toRun.length === 0) return;
@@ -703,7 +711,11 @@ export default function BatchPage() {
                 </div>
                 <p className="text-[10px] text-[#6B6560] mt-2">✅ Можна закрити вкладку — генерація триває на сервері. Результати з'являться тут і в «Історії».</p>
               </div>
-              <button onClick={() => { pollRef.current = false; setPhase("done"); }} className="text-xs text-[#6B6560] hover:text-[#F5F0EB]">Сховати прогрес (генерація продовжиться у фоні)</button>
+              <div className="flex items-center gap-4">
+                <button onClick={cancelBatch}
+                  className="bg-red-500/15 hover:bg-red-500/25 text-red-400 text-sm font-medium px-4 py-2 rounded-lg">⛔ Скасувати генерацію</button>
+                <button onClick={() => { pollRef.current = false; setPhase("done"); }} className="text-xs text-[#6B6560] hover:text-[#F5F0EB]">Сховати прогрес (триває у фоні)</button>
+              </div>
             </div>
           )}
 
