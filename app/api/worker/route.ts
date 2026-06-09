@@ -172,7 +172,12 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
   // Returns the generated base64 so the anchor pre-step can capture its bytes.
   const processSlot = async (i: number): Promise<string | null> => {
     const useAnchor = !!anchorPart && needsAnchor(i);
-    const callRefs = useAnchor ? [anchorPart!, ...refs] : refs; // identity first, product last
+    // Anchor flow: identity (image 1) + ONE product ref only. Product photos
+    // usually show the SELLER's original model — feeding several of them gives
+    // Nano Banana multiple competing faces and it sometimes grabs the wrong one
+    // (the original instead of our anchor). One product ref (garment is also on
+    // the anchor + in the prompt) keeps fidelity while cutting that confusion.
+    const callRefs = useAnchor ? [anchorPart!, refs[0]] : refs;
     const callInstr = useAnchor ? anchorInstr : imageInstructionsFor(cat, productType, bg);
     let b64: string | null = null;
     let curPrompt = prompts[i];
