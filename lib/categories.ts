@@ -144,3 +144,34 @@ export function classifyCategory(text?: string): CategoryId | null {
   }
   return null;
 }
+
+// ── Identity anchor: which angles actually show the human MODEL ───────────────
+// Only PERSON shots get the identity reference. Product-only angles (macro/detail,
+// flat product shots like "pair_front", "product_white") are EXCLUDED — they must
+// NEVER receive a person image (that's what made the old "деталь = walking girl"
+// regression). Listed in anchor-PREFERENCE order: the first present angle is the
+// most reliable full-identity source to generate first and reuse as the anchor.
+const PERSON_ANGLES: Record<CategoryId, readonly string[]> = {
+  // Order = anchor preference: the FULLEST shot (most face/body to lock identity
+  // from) first, so the captured anchor is a strong identity source.
+  clothing:    ["fullbody_front", "three_quarter_front", "action", "creative", "fullbody_side", "fullbody_back", "three_quarter_back"],
+  shoes:       ["lifestyle", "on_foot"],
+  jewelry:     ["lifestyle", "on_model"],
+  accessories: ["lifestyle", "on_shoulder", "on_hand"],
+  object:      [],
+};
+
+// True if this angle contains the human model (→ anchor-eligible).
+export function isPersonAngle(catId: CategoryId, angleId: string): boolean {
+  return PERSON_ANGLES[catId]?.includes(angleId) ?? false;
+}
+
+// Index (within the run's resolved angles) of the best identity-anchor shot, or
+// -1 if this run has no person angle. Picks by PERSON_ANGLES preference order.
+export function anchorAngleIndex(catId: CategoryId, angles: readonly AngleDef[]): number {
+  for (const id of PERSON_ANGLES[catId] ?? []) {
+    const idx = angles.findIndex((a) => a.id === id);
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}

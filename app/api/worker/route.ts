@@ -1,11 +1,11 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { resolveApiKey, refundTokens, restoreFreeGeneration } from "@/lib/tokens";
 import {
-  generatePrompts, generateImage, imageInstructionsFor, generateListing, varyForSafety, type GeminiImagePart,
+  generatePrompts, generateImage, imageInstructionsFor, anchorInstructions, generateListing, varyForSafety, type GeminiImagePart,
 } from "@/lib/gemini";
-import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
+import { ensureBucket, uploadImage, downloadImageBase64 } from "@/lib/supabase/storage";
 import { resolveAngles, qualityTier, refundForRun } from "@/lib/angles";
-import { category } from "@/lib/categories";
+import { category, isPersonAngle, anchorAngleIndex } from "@/lib/categories";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
 import { fetchImageAsPart } from "@/lib/safe-image-fetch";
 import { kickWorker } from "@/lib/factory";
@@ -145,18 +145,42 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
     /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? "черга (429)" :
     /timeout|aborted|abort/i.test(msg) ? "таймаут" : "помилка";
 
-  // Generate one slot INDEPENDENTLY from its own rich per-angle prompt (the Make
-  // approach) — each angle is a distinct, dynamic shot (a real close-up for the
-  // "detail" angle, a true 3/4, etc.). The same word-for-word character sheet in
-  // every prompt keeps the model consistent. (No anchor — that flattened the set.)
-  const processSlot = async (i: number): Promise<void> => {
+  // ── Identity anchor (env-gated IDENTITY_ANCHOR, on-model categories only) ───
+  // The SAME model must appear on every PERSON angle. We generate ONE reliable
+  // full-identity shot first, then feed it back as an IDENTITY-ONLY reference
+  // (alongside the product refs) to the other person angles — so Nano Banana keeps
+  // the same face/hair/body while pose+scene come from each rich per-angle prompt.
+  // Product-only angles (detail/macro/flat shots) NEVER receive the person image,
+  // so a figure can't bleed into a close-up (the old "деталь = walking girl" bug).
+  // ZERO extra image calls: the anchor is a shot we generate anyway (or re-download
+  // from storage on a later pass — a cheap fetch, not a Gemini call).
+  const rejectedSet = new Set(Array.isArray(g.rejected_slots) ? g.rejected_slots : []);
+  const anchorOn = process.env.IDENTITY_ANCHOR === "1" && cat.onModel;
+  let anchorIdx = anchorOn ? anchorAngleIndex(cat.id, angles) : -1;
+  if (anchorIdx >= 0 && rejectedSet.has(anchorIdx)) anchorIdx = -1; // user gave up on it → no anchor
+  let anchorPart: GeminiImagePart | null = null;
+  const anchorInstr = anchorOn ? anchorInstructions(productType) : "";
+  const mimeOfB64 = (b64: string) => (b64.startsWith("/9j/") ? "image/jpeg" : "image/png");
+  // A person angle (not the anchor itself) that needs the identity reference.
+  const needsAnchor = (i: number) =>
+    anchorIdx >= 0 && i !== anchorIdx && isPersonAngle(cat.id, angles[i].id);
+
+  // Generate one slot. A PERSON angle (other than the anchor itself) uses the
+  // identity anchor + product refs + role-split instructions → the same model in a
+  // DYNAMIC shot. The anchor slot and all product-only angles keep the independent
+  // product-only flow (each a distinct shot; the macro stays a true macro).
+  // Returns the generated base64 so the anchor pre-step can capture its bytes.
+  const processSlot = async (i: number): Promise<string | null> => {
+    const useAnchor = !!anchorPart && needsAnchor(i);
+    const callRefs = useAnchor ? [anchorPart!, ...refs] : refs; // identity first, product last
+    const callInstr = useAnchor ? anchorInstr : imageInstructionsFor(cat, productType, bg);
     let b64: string | null = null;
     let curPrompt = prompts[i];
     let lastErr = "";
     for (let a = 1; a <= 3; a++) {
       await pace(); // steady rate, no bursts → fewer 429 on the shared quota
       try {
-        b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, imageInstructionsFor(cat, productType, bg));
+        b64 = await generateImage(apiKey, curPrompt, callRefs, tier.model, tier.location, callInstr);
         break;
       } catch (e) {
         const msg = String(e); lastErr = msg;
@@ -166,7 +190,7 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
         if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3500 * a : 600));
       }
     }
-    if (!b64) { failTags[i] = tagOf(lastErr); return; } // failed → retried next pass (bounded by MAX_PASSES)
+    if (!b64) { failTags[i] = tagOf(lastErr); return null; } // failed → retried next pass (bounded by MAX_PASSES)
     try {
       imageUrls[i] = await uploadImage(b64, `${g.user_id}/${g.id}/${i + 1}.jpg`);
       if (driveToken && driveFolderId) {
@@ -176,7 +200,7 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
           driveUrls[i] = up.webViewLink;
         } catch { /* keep storage URL */ }
       }
-    } catch { return; /* upload failed → slot stays empty */ }
+    } catch { return b64; /* upload failed → slot stays empty, bytes still usable as anchor */ }
     // Atomic per-slot write (FOR UPDATE serializes parallel writes on this row).
     let saved = false;
     for (let s = 0; s < 2 && !saved; s++) {
@@ -194,11 +218,38 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
           .eq("id", g.id).eq("claimed_at", g.claimed_at);
       } catch { imageUrls[i] = ""; driveUrls[i] = ""; } // truly unpersistable → count as failed
     }
+    return b64;
   };
 
+  // Resolve the identity anchor BEFORE the pool. Already done (later pass) →
+  // re-download its bytes; not yet done → generate it first and capture the bytes.
+  // If it fails/429s, anchoring is simply skipped this pass (the other person slots
+  // fall back to today's product-only flow and retry next pass) — best-effort boost,
+  // never a hard dependency, so a 429 degrades gracefully instead of stalling.
+  if (anchorIdx >= 0) {
+    if (imageUrls[anchorIdx]) {
+      const dl = await downloadImageBase64(`${g.user_id}/${g.id}/${anchorIdx + 1}.jpg`);
+      if (dl) anchorPart = { inline_data: { mime_type: mimeOfB64(dl), data: dl } };
+    } else if (Date.now() - t0 < BUDGET_MS) {
+      const b64 = await processSlot(anchorIdx); // anchorPart still null here → product-only flow, correct angle
+      if (b64) anchorPart = { inline_data: { mime_type: mimeOfB64(b64), data: b64 } };
+    }
+  }
+
   const POOL = fast ? 5 : Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
-  const rejectedSet = new Set(Array.isArray(g.rejected_slots) ? g.rejected_slots : []);
-  const pending = Array.from({ length: N }, (_, i) => i).filter((i) => !imageUrls[i] && !rejectedSet.has(i));
+  // Build pending AFTER the anchor step. Two anchor-aware exclusions:
+  // (1) the anchor slot, once its bytes exist this pass (even if its upload failed),
+  //     must not be regenerated in the pool — that would be a wasted 2nd Gemini call.
+  // (2) a person angle that needs the anchor is DEFERRED when the anchor isn't ready
+  //     (failed/skipped this pass) — it waits for a pass where the anchor succeeds,
+  //     so a person shot NEVER generates anchorless and silently drifts. It re-queues
+  //     via `remaining` and retries next pass (bounded by MAX_PASSES). Product-only
+  //     angles keep generating every pass regardless.
+  const pending = Array.from({ length: N }, (_, i) => i).filter((i) =>
+    !imageUrls[i] && !rejectedSet.has(i)
+    && !(anchorPart && i === anchorIdx)
+    && !(needsAnchor(i) && !anchorPart)
+  );
 
   // Pool the slots. POOL caps concurrent calls; a lane stops pulling past the
   // budget (in-flight ones finish, the rest go next pass).

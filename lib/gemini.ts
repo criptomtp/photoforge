@@ -321,23 +321,30 @@ export function varyForSafety(prompt: string, attempt: number): string {
   return prompt + (mods[Math.min(attempt, mods.length - 1)] ?? mods[mods.length - 1]);
 }
 
-// Instructions for non-anchor angles: the reference is used ONLY as an identity
-// lock (same model + same product). The pose / scene / crop come from the rich
-// per-angle prompt that follows → ONE model across a DYNAMIC, varied photoshoot
-// (not 8 near-identical clones in the same spot).
-const ANCHOR_IMAGE_INSTRUCTIONS = `ЗАВДАННЯ: згенеруй НОВЕ, ДИНАМІЧНЕ фото для фотосету з ТІЄЮ САМОЮ моделлю, що на доданому зображенні-еталоні. Еталон — джерело ТІЛЬКИ про дві речі:
-— ЗОВНІШНІСТЬ моделі: те саме обличчя, риси, відтінок шкіри, колір і довжина волосся, зачіска, борода, статура (це ОДНА Й ТА САМА людина на всіх кадрах серії);
-— ТОВАР-ГЕРОЙ: крій, колір і відтінок, текстуру, матеріал, принти, логотипи, фурнітуру.
+// Instructions for non-anchor PERSON angles. TWO roles among the input images:
+// image 1 = OUR model's earlier shot (take ONLY the person's identity), the rest
+// = product reference (take ONLY the garment). Pose/scene/crop come from the rich
+// per-angle prompt → ONE model across a DYNAMIC, varied photoshoot. This is the
+// fixed reincarnation of the old anchor: the prior version conflated identity +
+// scene in a single unlabelled image, so Nano Banana copied the WHOLE anchor and
+// flattened the set. Here the roles are split and scene-copying is hard-forbidden.
+const ANCHOR_IMAGE_INSTRUCTIONS = `ВХІДНІ ЗОБРАЖЕННЯ МАЮТЬ РІЗНІ РОЛІ — не плутай їх.
+— ПЕРШЕ зображення — ЕТАЛОН НАШОЇ МОДЕЛІ (кадр із цього ж фотосету). Візьми з нього ВИКЛЮЧНО ідентичність людини: те саме обличчя, його риси й форму, відтінок шкіри, колір і довжину волосся, зачіску, бороду (якщо є), статуру. Це ОДНА Й ТА САМА людина на всіх кадрах серії. КАТЕГОРИЧНО НЕ копіюй із цього зображення позу, поворот тіла, ракурс камери, кадрування, фон, сцену, освітлення чи одяг — усе це НЕ звідси.
+— РЕШТА зображень — ЕТАЛОН ТОВАРУ-ГЕРОЯ {PRODUCT}. Візьми з них ВИКЛЮЧНО сам товар: крій, колір і відтінок, текстуру, матеріал, шви, фурнітуру, принти, логотипи. НЕ переноси з них фон, реквізит, чужі речі чи людину.
 
-УСЕ ІНШЕ ПОБУДУЙ ЗАНОВО за промптом нижче — це має бути ВІЗУАЛЬНО ІНШИЙ, живий кадр:
-— власна поза й рух моделі, власний ракурс і кадрування (повний зріст / 3-4 / великий план / деталь / у русі);
-— власна сцена/локація, освітлення й композиція згідно з промптом.
-НЕ копіюй позу, фон, кадрування чи композицію еталона — кожен кадр серії має бути ІНШИМ і динамічним, як у справжній фотозйомці.
+ПОБУДУЙ НОВИЙ, ВІЗУАЛЬНО ІНШИЙ КАДР: та сама людина (з еталона моделі), одягнена в товар-герой, але ПОЗА / ПОВОРОТ ТІЛА / РАКУРС КАМЕРИ / КАДРУВАННЯ / СЦЕНА / ФОН беруться СУВОРО з тексту промпту нижче, а НЕ зі вхідних зображень. Кожен кадр серії — інший і динамічний, як у справжній фотозйомці (різні пози, плани, локації).
 
-Незмінні лише: та сама людина і той самий товар-герой. Output PNG, рівно 1035x1440 (3:4). У відповідь — тільки слово ГОТОВО.`;
+НЕ ЗМІНЮЙ між кадрами: пропорції й форму обличчя, колір очей, колір і довжину волосся, зачіску, відтінок шкіри — це та сама людина (no morphing, no face change, same identity).
+НЕ ВІДТВОРЮЙ зі вхідних зображень: позу, кадрування, фон, сцену чи освітлення.
 
-export function anchorInstructions(): string {
-  return ANCHOR_IMAGE_INSTRUCTIONS;
+Реалізуй саме той ракурс, що в промпті: «ззаду» = модель спиною до камери, обличчя не видно; «збоку» = чіткий профіль; «3/4» = поворот ~45°. Реалістична анатомія рук (п'ять пальців), без артефактів і дубльованого товару.
+Output PNG, вертикаль 3:4 (1035x1440). У відповідь — тільки слово ГОТОВО.`;
+
+// product → injects the hero name so the model knows which item is the product
+// reference (vs the identity reference).
+export function anchorInstructions(product?: string): string {
+  const hero = product?.trim() ? `«${product.trim()}»` : "цільового товару, описаного у промпті вище";
+  return ANCHOR_IMAGE_INSTRUCTIONS.replace(/\{PRODUCT\}/g, () => hero);
 }
 
 // Safe default for generateImage when no per-call instructions are supplied.
@@ -455,8 +462,15 @@ export async function generateImage(
   instructions: string = DEFAULT_IMAGE_INSTRUCTIONS,
   timeoutMs: number = 50_000
 ): Promise<string> {
-  // Use only the first reference image (main reference) for image generation
-  const refPart = referenceImages[0];
+  // Feed ALL reference images (was: only the first). The identity-anchor flow
+  // passes [modelShot, ...productRefs] so Nano Banana keeps the SAME model
+  // (image 1) wearing the product (the rest). A single-element array behaves
+  // exactly as before → object/BYOK/manual-regen paths are unchanged. The filter
+  // also fixes a latent crash when referenceImages was empty (referenceImages[0]
+  // was undefined).
+  const refParts = (referenceImages ?? [])
+    .filter((r) => r?.inline_data?.data)
+    .map((r) => ({ inline_data: r.inline_data }));
 
   const body = {
     contents: [
@@ -465,12 +479,19 @@ export async function generateImage(
         parts: [
           { text: prompt },
           { text: instructions },
-          { inline_data: refPart.inline_data },
+          ...refParts,
         ],
       },
     ],
     generationConfig: {
       responseModalities: ["IMAGE", "TEXT"],
+      // Pin the marketplace portrait by CONFIG, not by copying an input image's
+      // shape — removes the "adopt the input image's aspect ratio" pull that
+      // physically flattened the earlier single-anchor attempt. Vertex path only
+      // (apiKey === null): the platform models (gemini-2.5-flash-image + Gemini 3)
+      // document imageConfig.aspectRatio. BYOK/AI-Studio keys are left untouched
+      // so an unsupported-field 400 can never break a third-party user's run.
+      ...(apiKey === null ? { imageConfig: { aspectRatio: "3:4" } } : {}),
     },
   };
 
