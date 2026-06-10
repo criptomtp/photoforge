@@ -709,19 +709,23 @@ export default function BatchPage() {
 
           {phase !== "running" ? (
             <div className="space-y-2">
-              <button onClick={() => startBatch(false)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
+              {/* PRIMARY: fire everything into the background queue AND open the card
+                  review, where photos fill in live as the worker grinds. The main
+                  "select 50 → generate in background → review/approve as they fill" flow. */}
+              <button onClick={() => startBatch(true)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
                 className="w-full bg-[#E8943A] hover:bg-[#D4832B] disabled:opacity-40 disabled:cursor-not-allowed text-[#0C0B0A] font-semibold py-3 rounded-xl transition-colors">
-                {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "Запустити обрані знову" : `Запустити обрані — ${n}`; })()}
+                {(() => { const n = validRows.filter(({ i }) => selected.has(i)).length; return phase === "done" ? "⚡ Запустити у фоні знову" : `⚡ Запустити всі у фоні — ${n}`; })()}
+                <span className="block text-[11px] font-normal opacity-80">генеруються самі · ти лиш гортаєш картки й апруваєш</span>
               </button>
               <button onClick={() => startBatch(false, true)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
-                className="w-full bg-[#161412] border border-[#E8943A]/50 hover:border-[#E8943A] disabled:opacity-40 disabled:cursor-not-allowed text-[#E8943A] font-semibold py-3 rounded-xl transition-colors">
-                🃏 Поступово (по черзі) — натискаєш «Згенерувати» на кожному товарі сам
+                className="w-full bg-[#161412] border border-[#E8943A]/50 hover:border-[#E8943A] disabled:opacity-40 disabled:cursor-not-allowed text-[#E8943A] font-medium py-2.5 rounded-xl transition-colors text-sm">
+                🃏 Поступово — кожен товар генерую вручну (тісний контроль при 429)
               </button>
-              <button onClick={() => startBatch(true)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
-                className="w-full bg-[#161412] border border-[#2A2723] hover:border-[#E8943A] disabled:opacity-40 disabled:cursor-not-allowed text-[#8B857F] hover:text-[#E8943A] text-sm font-medium py-2.5 rounded-xl transition-colors">
-                ⚡ Картковий «усі одразу» — поставити всі в чергу + переглядати
+              <button onClick={() => startBatch(false)} disabled={!detected || validRows.filter(({ i }) => selected.has(i)).length === 0}
+                className="w-full bg-[#161412] border border-[#2A2723] hover:border-[#E8943A] disabled:opacity-40 disabled:cursor-not-allowed text-[#8B857F] hover:text-[#E8943A] text-xs font-medium py-2 rounded-xl transition-colors">
+                Просто поставити в чергу (без переходу в картки)
               </button>
-              <p className="text-[10px] text-[#6B6560] text-center">«Поступово» (рекомендую при черзі 429): товари відкриваються по черзі, генеруєш кожен окремо своєю кнопкою, перевіряєш, тиснеш «ОК і далі». «Усі одразу» — ставить усе в чергу й доливає наживо.</p>
+              <p className="text-[10px] text-[#6B6560] text-center">«Запустити у фоні» (рекомендую): усі обрані стають у чергу й генеруються самі; одразу відкриється перегляд карток — гортаєш, фото доливаються наживо, тиснеш «ОК і далі». «Поступово» — генеруєш кожен товар вручну своєю кнопкою (зручно, коли 429 сильно лютує).</p>
             </div>
           ) : (
             <div className="space-y-3">
