@@ -110,6 +110,21 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
     await supabaseAdmin.from("generations").update({ prompts }).eq("id", g.id);
   }
 
+  // Split prompts ↔ images across passes. Prompt generation (gemini-2.5-pro) eats
+  // ~30-45s of the 60s function, so attempting images in the SAME pass blows the
+  // Vercel cap → the worker is killed mid-image, the job is orphaned, and recovers
+  // only via the slow 120s reap (≈2 min lost per product). If little budget remains,
+  // hand the IMAGE work to a FRESH pass: prompts are saved, so the next pass jumps
+  // straight to images with a full budget. (When prompts were already cached, almost
+  // no time has elapsed → we fall through and generate images now, as before.)
+  // Ownership-guarded so a stale-reclaimed worker can't requeue the new owner's job.
+  if (Date.now() - t0 > BUDGET_MS - 10_000) {
+    await supabaseAdmin.from("generations")
+      .update({ status: "queued", claimed_at: null })
+      .eq("id", g.id).eq("status", "processing").eq("claimed_at", g.claimed_at);
+    return;
+  }
+
   const imageUrls = urlsOfLength(g.image_urls, N);
   const driveUrls = urlsOfLength(g.drive_urls, N);
 
