@@ -107,12 +107,24 @@ export default function QAClient({ batchId }: { batchId: string }) {
     }
   }
 
-  // Generate every still-empty slot of a product at once.
+  // Fill every still-empty slot via the WORKER QUEUE. The worker's multi-pass
+  // persistence (pacing + retries across many invocations) rides through 429 far
+  // better than a one-shot synchronous regen, which is why a batch reaches 8/8 over
+  // p7-p8 passes while a single manual regen keeps losing. The live poll then shows
+  // the slots fill in on their own.
   async function genAllMissing(item: Item) {
-    const empties = item.slots.filter((s) => !s.url && !s.rejected);
-    await Promise.all(empties.map((s) =>
-      act(item.id, s.index, "regen", sceneBySlot[`${item.id}:${s.index}`] ?? (item.season ? "seasonal" : (item.onModel ? "free" : "studio")))
-    ));
+    const key = `gen:${item.id}`;
+    setBusy((b) => new Set(b).add(key));
+    try {
+      const res = await fetch("/api/qa/requeue", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generationId: item.id }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(d.error || "Не вдалося поставити в чергу"); return; }
+      await load(); // status → queued → live poll fills the slots
+    } catch (e) { alert("Мережева помилка: " + (e as Error).message); await load(); }
+    finally { setBusy((b) => { const n = new Set(b); n.delete(key); return n; }); }
   }
 
   // Step-by-step mode: trigger a DRAFT product (worker generates all its angles).
@@ -218,8 +230,10 @@ export default function QAClient({ batchId }: { batchId: string }) {
             ) : it.slots.some((s) => !s.url && !s.rejected) && (
               <button
                 onClick={() => genAllMissing(it)}
-                className="text-sm font-medium px-3 py-2 rounded-lg bg-[#E8943A]/15 text-[#E8943A] border border-[#E8943A]/40 hover:bg-[#E8943A]/25"
-              >↻ Згенерувати всі відсутні ({it.slots.filter((s) => !s.url && !s.rejected).length})</button>
+                disabled={busy.has(`gen:${it.id}`)}
+                title="Доганяє відсутні кадри через чергу воркера — багато проходів із ретраями, стійко до 429 (надійніше за поодиноку перегенерацію)"
+                className="text-sm font-medium px-3 py-2 rounded-lg bg-[#E8943A]/15 text-[#E8943A] border border-[#E8943A]/40 hover:bg-[#E8943A]/25 disabled:opacity-50"
+              >🔄 Доганяти відсутні ({it.slots.filter((s) => !s.url && !s.rejected).length})</button>
             )}
             <button
               onClick={() => toggleApprove(it.id)}

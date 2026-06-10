@@ -111,22 +111,34 @@ export async function POST(request: Request) {
   const instr = imageInstructionsFor(cat, productType, bg);
   let b64: string | null = null;
   let curPrompt = basePrompt;
-  // More attempts (429 rejects fast) so a manual regen has more chances to slip
-  // through the shared quota; 13s × up to 4 still fits the 60s cap. On a SAFETY/
-  // empty block VARY the prompt; on 429/timeout retry as-is.
-  for (let a = 1; a <= 4; a++) {
+  let lastErr = "";
+  // Fail FAST and clearly: a few short attempts well within the 60s cap (≈36s) so
+  // the request never silently dies at the Vercel timeout. The robust 429 path is
+  // the "Доганяти відсутні" queue button (worker persistence), NOT this one-shot.
+  // On a SAFETY/empty block VARY the prompt; on 429/timeout retry as-is.
+  for (let a = 1; a <= 3; a++) {
     try {
-      b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, instr, 13_000);
+      b64 = await generateImage(apiKey, curPrompt, refs, tier.model, tier.location, instr, 12_000);
       break;
     } catch (e) {
-      const msg = String(e);
-      if (a < 4 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(basePrompt, a - 1); continue; }
-      if (a < 4) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 2000 : 500));
+      const msg = String(e); lastErr = msg;
+      if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(basePrompt, a - 1); continue; }
+      if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 2000 : 500));
     }
   }
   if (!b64) {
     if (metered) await creditTokens(user.id, cost, "refund", "Повернення: перегенерація не вдалась").catch(() => {});
-    return NextResponse.json({ error: "Генерація не вдалась, спробуйте ще раз" }, { status: 502 });
+    // Honest, specific reason so the user knows WHAT happened and WHAT to do
+    // (especially: 429 is not a bug — use the persistent queue button).
+    const reason =
+      /\b429\b|RESOURCE_EXHAUSTED/i.test(lastErr)
+        ? "Черга Google зайнята (429). Це НЕ помилка кадру — натисни «🔄 Доганяти відсутні» вгорі: воркер ретраїть багатьма проходами, стійко до 429."
+      : /SAFETY_BLOCK|PROHIBIT|RECITATION|IMAGE_SAFETY|CSAM|CIVIC/i.test(lastErr)
+        ? "Фільтр Google заблокував цей кадр (часто — відверта білизна ззаду / оголене тіло). Спробуй іншу сцену чи примітку, або згенеруй цей ракурс без моделі."
+      : /timeout|aborted|abort/i.test(lastErr)
+        ? "Перевищено час очікування Google. Спробуй ще раз або «🔄 Доганяти відсутні»."
+        : "Не вдалося згенерувати кадр. Спробуй ще раз або «🔄 Доганяти відсутні».";
+    return NextResponse.json({ error: reason }, { status: 502 });
   }
 
   // Store first; only then swap the Drive file (so a failed regen never destroys
