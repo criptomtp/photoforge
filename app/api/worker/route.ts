@@ -57,7 +57,11 @@ export async function POST(request: Request) {
     .from("generations").select("id", { count: "exact", head: true })
     .in("status", ["queued", "processing"]);
   const fast = (pendingCount ?? 99) <= FAST_MAX;
-  const lanes = fast ? 2 : Math.max(1, Number(process.env.WORKER_LANES) || 1);
+  // Throttling a big queue does NOT avoid 429 (DSQ rejects regardless) — it only
+  // slows successes. Since failed 429s are free + retried, flood MORE concurrent
+  // requests to maximize successes/minute. Big-queue defaults are now aggressive
+  // (3 products in parallel); all tunable via env.
+  const lanes = fast ? 2 : Math.max(1, Number(process.env.WORKER_LANES) || 3);
 
   const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: lanes, p_max_passes: 5 });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
@@ -143,7 +147,7 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
 
   // Pace image-generation starts to a steady rate (no bursts) so we stay under
   // the shared-quota (DSQ) throttle. Tunable via WORKER_PACE_MS.
-  const PACE_MS = fast ? 0 : Math.max(0, Number(process.env.WORKER_PACE_MS) || 800);
+  const PACE_MS = fast ? 0 : Math.max(0, Number(process.env.WORKER_PACE_MS) || 150);
   let nextStart = 0;
   const pace = async () => {
     const now = Date.now();
@@ -256,7 +260,7 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
     }
   }
 
-  const POOL = fast ? 5 : Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 3);
+  const POOL = fast ? 5 : Math.max(1, Number(process.env.WORKER_IMAGE_POOL) || 8);
   // Build pending AFTER the anchor step. Two anchor-aware exclusions:
   // (1) the anchor slot, once its bytes exist this pass (even if its upload failed),
   //     must not be regenerated in the pool — that would be a wasted 2nd Gemini call.
