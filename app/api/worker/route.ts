@@ -13,7 +13,10 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 60; // Vercel Hobby cap — the worker stays well under it
 const BUDGET_MS = 45_000;      // stop starting new images past this; finish + re-trigger
-const MAX_PASSES = 8;          // bound retries of failed/untried slots across passes (paced runs do less per pass)
+// Bound re-queue passes per product. FIFO + a HIGH value = "hammer the oldest
+// product until all its slots are done, then move on" — for an overnight Vertex
+// run under DSQ where each pass only lands 1-2 images. Tunable via env.
+const MAX_PASSES = Math.max(1, Number(process.env.WORKER_MAX_PASSES) || 8);
 
 interface JobParams {
   userEmail?: string; category?: string; productType?: string; name?: string;
@@ -191,27 +194,43 @@ async function processJob(g: GenRow, t0: number, fast: boolean): Promise<void> {
   // Returns the generated base64 so the anchor pre-step can capture its bytes.
   const processSlot = async (i: number): Promise<string | null> => {
     const useAnchor = !!anchorPart && needsAnchor(i);
-    // Anchor flow: identity (image 1) + ONE product ref only. Product photos
-    // usually show the SELLER's original model — feeding several of them gives
-    // Nano Banana multiple competing faces and it sometimes grabs the wrong one
-    // (the original instead of our anchor). One product ref (garment is also on
-    // the anchor + in the prompt) keeps fidelity while cutting that confusion.
-    const callRefs = useAnchor ? [anchorPart!, refs[0]] : refs;
+    // Reference images fed to Nano Banana:
+    // - anchor flow: identity (image 1) + ONE product ref.
+    // - non-anchor ON-MODEL (Make mode): exactly ONE product ref. Product photos
+    //   usually show the SELLER's original model; feeding several (we fetch up to
+    //   3) gives the model multiple competing faces and it drifts / copies the
+    //   seller. Make fed exactly one and stayed consistent via the word-for-word
+    //   character sheet in the prompt — we match that.
+    // - object (no model): all refs (no competing person → more fidelity is fine).
+    const callRefs = useAnchor
+      ? [anchorPart!, refs[0]]
+      : (cat.onModel ? refs.slice(0, 1) : refs);
     const callInstr = useAnchor ? anchorInstr : imageInstructionsFor(cat, productType, bg);
     let b64: string | null = null;
     let curPrompt = prompts[i];
     let lastErr = "";
     for (let a = 1; a <= 3; a++) {
-      await pace(); // steady rate, no bursts → fewer 429 on the shared quota
+      if (Date.now() - t0 > BUDGET_MS) break; // past budget → don't start a fresh attempt (the rest come from later passes)
+      await pace(); // steady global drip, NOT bursts → DSQ 429s drop (Google: "smoothen traffic, spread requests over time")
       try {
-        b64 = await generateImage(apiKey, curPrompt, callRefs, tier.model, tier.location, callInstr);
+        b64 = await generateImage(apiKey, curPrompt, callRefs, tier.model, tier.location, callInstr, 28_000);
         break;
       } catch (e) {
         const msg = String(e); lastErr = msg;
-        // No image returned (policy block OR empty result) → re-sending the same
-        // prompt is futile; VARY it. 429/timeout = the prompt is fine → back off.
-        if (a < 3 && /SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
-        if (a < 3) await new Promise((r) => setTimeout(r, /\b429\b|RESOURCE_EXHAUSTED/i.test(msg) ? 3500 * a : 600));
+        if (a >= 3) break;
+        // No image / policy block → re-sending the same prompt is futile; VARY it.
+        if (/SAFETY_BLOCK|NO_IMAGE|PROHIBIT|RECITATION/i.test(msg)) { curPrompt = varyForSafety(prompts[i], a - 1); continue; }
+        // 429 → honor an explicit "retry in Ns" from the error body if present, else
+        // capped exponential backoff WITH FULL JITTER (Google's guidance: without
+        // jitter, parallel retries re-burst in lockstep and re-trigger 429). The long
+        // tail of retries comes from MORE PASSES (MAX_PASSES), not a longer single call.
+        if (/\b429\b|RESOURCE_EXHAUSTED/i.test(msg)) {
+          const hint = msg.match(/retry in\s+([\d.]+)\s*s/i);
+          const wait = (hint ? Math.min(Number(hint[1]) * 1000, 25_000) : Math.min(2000 * 2 ** (a - 1), 16_000)) * (0.5 + Math.random() * 0.5);
+          await new Promise((r) => setTimeout(r, wait));
+        } else {
+          await new Promise((r) => setTimeout(r, 600));
+        }
       }
     }
     if (!b64) { failTags[i] = tagOf(lastErr); return null; } // failed → retried next pass (bounded by MAX_PASSES)

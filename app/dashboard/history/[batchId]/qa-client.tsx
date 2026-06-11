@@ -78,7 +78,9 @@ export default function QAClient({ batchId }: { batchId: string }) {
       const res = await fetch("/api/qa/photo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ generationId: genId, index, action, scene, note }),
+        // Manual regen now HAMMERS via the worker queue (persistent under 429),
+        // carrying the correction note baked into the prompt.
+        body: JSON.stringify({ generationId: genId, index, action, scene, note, persistent: action === "regen" }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -90,6 +92,7 @@ export default function QAClient({ batchId }: { batchId: string }) {
         return;
       }
       if (action === "reject" || action === "unreject") { await load(); return; } // server is source of truth
+      if (data.persistent) { await load(); return; } // queued → worker fills it, live poll shows progress
       setItems((prev) => prev.map((it) => {
         if (it.id !== genId) return it;
         const slots = it.slots.map((s) =>

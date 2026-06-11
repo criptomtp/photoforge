@@ -7,6 +7,7 @@ import { resolveAngles, qualityTier, TOKEN_COSTS } from "@/lib/angles";
 import { category } from "@/lib/categories";
 import { getAccessToken, uploadFileToDrive, deleteDriveFile, driveFileId } from "@/lib/google-drive";
 import { fetchImageAsPart } from "@/lib/safe-image-fetch";
+import { kickWorker } from "@/lib/factory";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 60;
@@ -76,7 +77,44 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, action, index });
   }
 
-  // ── regen ──────────────────────────────────────────────────────────────
+  // ── persistent regen: HAMMER this slot with the user's correction note across
+  //    many worker passes (for DSQ 429) instead of one synchronous shot. Bakes
+  //    the note+scene into the STORED prompt for this slot, clears the slot, and
+  //    re-queues so the worker keeps retrying until it lands. ──────────────────
+  if (action === "regen" && (body as { persistent?: boolean }).persistent) {
+    const season = p.season ?? "";
+    const scene: SceneChoice = body.scene === "studio" || body.scene === "free" || body.scene === "seasonal"
+      ? body.scene : (season ? "seasonal" : "studio");
+    const userNote = (body.note ?? "").toString().trim().slice(0, 600);
+    // Strip any previous correction/scene appendix so a re-note REPLACES (not stacks).
+    const base = (prompts[index] || `Professional product photo, angle ${index + 1}.`)
+      .split("\n\n[ПРАВКА")[0].split("\n\nФОН ДЛЯ ЦЬОГО КАДРУ")[0];
+    const augmented = base + sceneSuffix(scene, season)
+      + (userNote ? `\n\n[ПРАВКА КОРИСТУВАЧА — ОБОВ'ЯЗКОВО врахуй і виправ саме це]: ${userNote}` : "");
+    const newPrompts = [...prompts]; newPrompts[index] = augmented;
+    await supabaseAdmin.from("generations").update({ prompts: newPrompts }).eq("id", g.id).eq("user_id", user.id);
+
+    // Clear the slot (storage + Drive + DB) so the worker regenerates it.
+    if (oldDriveId) { const token = await getAccessToken(user.id).catch(() => null); if (token) await deleteDriveFile(token, oldDriveId); }
+    await removeImage(path);
+    await supabaseAdmin.rpc("qa_set_slot", { p_gen_id: g.id, p_index: index, p_image_url: "", p_drive_url: "" });
+
+    // Charge this one slot (metered only; admin/BYOK/free not charged), then re-queue.
+    try {
+      const { admin, byok, freeQuota } = await resolveApiKey(user.id, user.email);
+      if (!admin && !byok && !freeQuota) {
+        const t = qualityTier(p.quality);
+        await chargeTokens(user.id, TOKEN_COSTS.image_gen * t.tokenMultiplier, "generation", "Перегенерація (черга)").catch(() => {});
+      }
+    } catch { /* proceed — admin/owner path */ }
+    await supabaseAdmin.from("generations")
+      .update({ status: "queued", claimed_at: null, passes: 0, error_message: null })
+      .eq("id", g.id).eq("user_id", user.id).in("status", ["done", "error", "processing"]);
+    await kickWorker(2);
+    return NextResponse.json({ ok: true, action: "regen", index, persistent: true });
+  }
+
+  // ── regen (synchronous, single quick attempt) ────────────────────────────
   let ctx;
   try { ctx = await resolveApiKey(user.id, user.email); }
   catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 402 }); }
