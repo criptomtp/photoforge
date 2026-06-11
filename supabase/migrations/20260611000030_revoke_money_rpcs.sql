@@ -1,4 +1,11 @@
 -- ============================================================================
+-- ⚠️ APPLY THIS MIGRATION LAST — AFTER the new code is deployed to production.
+-- It revokes EXECUTE on functions the *currently-deployed* code still calls via
+-- the authenticated client (try_consume_free_generation, increment_…). Once the
+-- new code (which calls them via the service-role admin client) is live, apply
+-- this to slam the door. Applying it while old code is live would break
+-- free-quota generation for the duration of the rollout.
+-- ============================================================================
 -- C1 (CRITICAL): close the monetization bypass via direct PostgREST RPC.
 --
 -- Postgres grants EXECUTE on new functions to PUBLIC by default, and Supabase

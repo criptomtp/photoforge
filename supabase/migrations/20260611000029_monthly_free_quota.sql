@@ -38,9 +38,11 @@ begin
   return found;
 end $$;
 
--- Stays revoked from the authenticated role (see 20260611000024); only the
--- service-role admin client invokes it.
-revoke all on function public.try_consume_free_generation(uuid) from public, anon, authenticated;
+-- NOTE: the EXECUTE revoke for this function lives in the FINAL migration
+-- (…_revoke_money_rpcs), which must be applied AFTER the new code is deployed —
+-- the currently-deployed code still calls this via the authenticated client, so
+-- revoking here would break production during a staged rollout. This migration
+-- is safe to apply before the deploy.
 
 -- The new quota_period_start column must be protected by the profiles guard
 -- trigger too — otherwise an authenticated user could PATCH it to a past month
