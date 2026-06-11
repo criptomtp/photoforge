@@ -33,7 +33,7 @@ export async function resolveApiKey(userId: string, email?: string): Promise<{
   // 1. Check user's own BYOK key
   const { data: profile } = await supabaseAdmin
     .from("profiles")
-    .select("gemini_api_key, token_balance, plan, generations_used, generations_limit")
+    .select("gemini_api_key, token_balance, plan, generations_used, generations_limit, quota_period_start")
     .eq("id", userId)
     .single();
 
@@ -70,8 +70,15 @@ export async function resolveApiKey(userId: string, email?: string): Promise<{
 
   // 2. Free plan monthly quota — no tokens needed
   const plan: string = profile?.plan ?? "free";
-  const generationsUsed: number = Number(profile?.generations_used ?? 0);
   const generationsLimit: number = Number(profile?.generations_limit ?? 0);
+  // The free counter resets monthly (try_consume_free_generation rolls it over);
+  // mirror that here so the gate doesn't read a stale used-count after a new month
+  // begins but before the first consume of the period.
+  const now = new Date();
+  const currentMonthFirst = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  const periodStart = (profile?.quota_period_start as string | undefined) ?? "";
+  const periodRolled = !periodStart || periodStart < currentMonthFirst;
+  const generationsUsed: number = periodRolled ? 0 : Number(profile?.generations_used ?? 0);
 
   if (plan === "free" && generationsUsed < generationsLimit) {
     const apiKey = await getPlatformKey();

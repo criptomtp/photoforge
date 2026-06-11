@@ -64,8 +64,13 @@ export function qualityTier(id?: string): QualityTier {
   return QUALITY_TIERS[(id as QualityId)] ?? QUALITY_TIERS.standard;
 }
 
+// Money is stored as numeric(12,4) in Postgres. Round every computed token
+// amount to 4 dp so JS float artefacts (e.g. 4.10 - 2.60 = 1.5000000000000004)
+// never drip sub-cent noise into balances over many reserve/refund cycles.
+const round4 = (x: number): number => Math.round(x * 1e4) / 1e4;
+
 export function costForAngles(angleCount: number, tokenMultiplier = 1): number {
-  return TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * tokenMultiplier * angleCount;
+  return round4(TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * tokenMultiplier * angleCount);
 }
 
 export const FULL_RUN_COST = costForAngles(ANGLE_DEFS.length); // 0.10 + 0.50*8 = 4.10
@@ -74,12 +79,12 @@ export const FULL_RUN_COST = costForAngles(ANGLE_DEFS.length); // 0.10 + 0.50*8 
 // images that SUCCEEDED. Full cost is reserved up-front; failures are refunded.
 export function netCostForRun(angleCount: number, imagesGenerated: number, tokenMultiplier = 1): number {
   if (imagesGenerated <= 0) return 0;
-  return TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * tokenMultiplier * Math.min(imagesGenerated, angleCount);
+  return round4(TOKEN_COSTS.prompt_gen + TOKEN_COSTS.image_gen * tokenMultiplier * Math.min(imagesGenerated, angleCount));
 }
 
 // How much of the up-front reserve to give back, given how many images succeeded.
 export function refundForRun(angleCount: number, imagesGenerated: number, tokenMultiplier = 1): number {
-  const refund = costForAngles(angleCount, tokenMultiplier) - netCostForRun(angleCount, imagesGenerated, tokenMultiplier);
+  const refund = round4(costForAngles(angleCount, tokenMultiplier) - netCostForRun(angleCount, imagesGenerated, tokenMultiplier));
   return refund > 0 ? refund : 0;
 }
 

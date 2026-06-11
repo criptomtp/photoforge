@@ -4,23 +4,22 @@ export const revalidate = 0;
 
 export default async function AdminAnalyticsPage() {
 
-  const [{ data: dailyStats }, { data: totals }] = await Promise.all([
+  const [{ data: dailyStats }, { data: totalsRow }] = await Promise.all([
     admin
       .from("admin_analytics_view")
       .select("*")
       .limit(30),
-    admin
-      .from("generations")
-      .select("status, images_generated")
-      .then(async ({ data }) => ({
-        data: {
-          total: data?.length ?? 0,
-          done: data?.filter((g) => g.status === "done").length ?? 0,
-          error: data?.filter((g) => g.status === "error").length ?? 0,
-          images: data?.reduce((s, g) => s + (g.images_generated ?? 0), 0) ?? 0,
-        },
-      })),
+    // Aggregate in Postgres instead of loading every generations row into Node.
+    admin.rpc("generation_totals").single(),
   ]);
+
+  const t = (totalsRow ?? {}) as { total?: number; done?: number; error?: number; images?: number };
+  const totals = {
+    total: Number(t.total ?? 0),
+    done: Number(t.done ?? 0),
+    error: Number(t.error ?? 0),
+    images: Number(t.images ?? 0),
+  };
 
   // Rough cost estimate — the exact billed amount is in Google Cloud Billing.
   // Prices from the 2026 council research: gemini-2.5-flash-image ≈ $0.039/image,

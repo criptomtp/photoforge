@@ -10,6 +10,17 @@ import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/goog
 import { fetchImageAsPart } from "@/lib/safe-image-fetch";
 import { kickWorker } from "@/lib/factory";
 import { NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
+
+// Constant-time secret comparison (avoids leaking the secret length / prefix via
+// response timing). Returns false on any missing/!= -length input.
+function secretOk(provided: string | null): boolean {
+  const expected = process.env.WORKER_SECRET;
+  if (!expected || !provided) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 export const maxDuration = 60; // Vercel Hobby cap — the worker stays well under it
 const BUDGET_MS = 45_000;      // stop starting new images past this; finish + re-trigger
@@ -42,14 +53,14 @@ function urlsOfLength(arr: unknown, n: number): string[] {
 }
 
 export async function POST(request: Request) {
-  if (request.headers.get("x-worker-secret") !== process.env.WORKER_SECRET) {
+  if (!secretOk(request.headers.get("x-worker-secret"))) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   // Finalize any orphaned jobs (killed mid-pass at the pass cap) so a batch can
   // never freeze. Cheap; runs every invocation, even when we end up idle.
   // 120s > the 60s Vercel hard-kill, so reaping can never touch a live worker.
-  try { await supabaseAdmin.rpc("reap_orphans", { p_stale_seconds: 120, p_max_passes: 5 }); } catch { /* best effort */ }
+  try { await supabaseAdmin.rpc("reap_orphans", { p_stale_seconds: 120, p_max_passes: MAX_PASSES }); } catch { /* best effort */ }
 
   // ADAPTIVE speed: a SMALL queue runs fast (more parallel, no pacing — like the
   // manual card flow); a BIG queue throttles to ride under the shared 429 quota.
@@ -66,7 +77,7 @@ export async function POST(request: Request) {
   // (3 products in parallel); all tunable via env.
   const lanes = fast ? 2 : Math.max(1, Number(process.env.WORKER_LANES) || 3);
 
-  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: lanes, p_max_passes: 5 });
+  const { data: claimed } = await supabaseAdmin.rpc("claim_generation", { p_stale_seconds: 90, p_max_lanes: lanes, p_max_passes: MAX_PASSES });
   const g: GenRow | undefined = Array.isArray(claimed) ? claimed[0] : claimed;
   if (!g) return NextResponse.json({ idle: true });
 
