@@ -55,6 +55,10 @@ project-*.json
 *.iam.gserviceaccount.com.json
 *-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
 
+# working data spreadsheets often carry pasted secrets (this one had OAuth keys)
+*.xlsx
+/Normalized data photo.xlsx
+
 # local agent / CLI tooling (not part of the app)
 .claude/
 .claude-flow/

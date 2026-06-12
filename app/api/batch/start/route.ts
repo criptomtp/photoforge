@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { resolveApiKey, reserveTokens } from "@/lib/tokens";
-import { resolveAngles, qualityTier } from "@/lib/angles";
+import { resolveAngles, qualityTier, TOKEN_COSTS } from "@/lib/angles";
 import { category } from "@/lib/categories";
 import { getAccessToken, createDriveFolder } from "@/lib/google-drive";
 import { kickWorker } from "@/lib/factory";
@@ -74,10 +74,12 @@ export async function POST(request: Request) {
       angleIds: resolved.length ? pAngleIds : [], quality: tier.id, mode: body.mode ?? "images",
       drive: !!body.drive, driveParentId,
     };
+    const billingKind = (admin || byok) ? "none" : (freeQuota ? "free" : "metered");
     const { data: gen, error } = await supabaseAdmin.from("generations").insert({
       user_id: user.id, batch_id: batchId, sku: pr.sku ?? null, category: pcat.id,
       product_type: params.productType, season: pr.season ?? "", gender: pr.gender ?? "",
       status: draft ? "draft" : "queued", params, image_urls: [],
+      billing_kind: billingKind, refund_unit: TOKEN_COSTS.image_gen * tier.tokenMultiplier, images_target: N,
     }).select("id").single();
     if (error || !gen) continue;
 
@@ -91,7 +93,7 @@ export async function POST(request: Request) {
         await supabaseAdmin.from("generations").update({ status: "error", error_message: "insufficient_tokens" }).eq("id", gen.id);
       }
     } else if (freeQuota) {
-      const { data: ok } = await supabase.rpc("try_consume_free_generation", { p_user_id: user.id });
+      const { data: ok } = await supabaseAdmin.rpc("try_consume_free_generation", { p_user_id: user.id });
       if (ok === true) queued++;
       else await supabaseAdmin.from("generations").update({ status: "error", error_message: "free_quota_exhausted" }).eq("id", gen.id);
     } else {

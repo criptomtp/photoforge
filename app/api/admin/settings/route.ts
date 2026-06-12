@@ -7,7 +7,7 @@ import { NextResponse } from "next/server";
 async function assertAdmin() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || user.email !== ADMIN_EMAIL) {
+  if (!user || user.email?.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
     throw new Error("Forbidden");
   }
   return user;

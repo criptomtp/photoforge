@@ -1,12 +1,17 @@
 import { createClient } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { generatePrompts, generateImage, imageInstructionsFor, type GeminiImagePart } from "@/lib/gemini";
 import { ensureBucket, uploadImage } from "@/lib/supabase/storage";
 import { resolveApiKey, reserveTokens, refundTokens, restoreFreeGeneration } from "@/lib/tokens";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
-import { resolveAngles, costForAngles, refundForRun, netCostForRun, qualityTier } from "@/lib/angles";
+import { resolveAngles, costForAngles, refundForRun, netCostForRun, qualityTier, TOKEN_COSTS } from "@/lib/angles";
 import { category } from "@/lib/categories";
 
-export const maxDuration = 300;
+// Vercel Hobby hard-caps at 60s regardless of a higher number; keeping this at
+// 60 makes the cap honest AND keeps a live request safely shorter than the
+// reaper's 180s sync-abandon threshold (no refund-vs-finish race). If you move
+// to Vercel Pro (300s), raise the reaper's p_sync_abandon_seconds above it too.
+export const maxDuration = 60;
 
 type SSEEvent =
   | { type: "status"; message: string }
@@ -82,6 +87,11 @@ export async function POST(request: Request) {
           return;
         }
 
+        // Best-effort: reconcile any earlier synchronous run that was killed
+        // mid-flight (the reaper refunds it + frees its stuck 'processing' row).
+        // No worker is ever kicked for single gens, so do it here.
+        try { await supabaseAdmin.rpc("reap_orphans", {}); } catch { /* best effort */ }
+
         // ── 3. Resolve API key (BYOK or platform + token check) ────────────
         send({ type: "status", message: "Перевірка балансу..." });
 
@@ -114,9 +124,17 @@ export async function POST(request: Request) {
         );
 
         // ── 5. Create generation record ────────────────────────────────────
+        // Store how this run reconciles itself if the request is killed mid-run
+        // (Vercel 60s cap) — the reaper refunds based on these. params stays NULL
+        // so the worker queue never claims this synchronous row.
+        const billingKind = (byok || admin) ? "none" : (freeQuota ? "free" : "metered");
+        const refundUnit = TOKEN_COSTS.image_gen * tier.tokenMultiplier;
         const { data: generation, error: dbError } = await supabase
           .from("generations")
-          .insert({ user_id: user.id, brand, product_type: productType, season, gender, category: cat.id, status: "processing" })
+          .insert({
+            user_id: user.id, brand, product_type: productType, season, gender, category: cat.id,
+            status: "processing", billing_kind: billingKind, refund_unit: refundUnit, images_target: N,
+          })
           .select()
           .single();
 
@@ -151,7 +169,7 @@ export async function POST(request: Request) {
           // Atomically consume one free-quota slot. A single conditional UPDATE
           // (in the RPC) closes the race where N concurrent requests each pass a
           // stale `generations_used < limit` check and all proceed for free.
-          const { data: consumed, error: consumeErr } = await supabase.rpc(
+          const { data: consumed, error: consumeErr } = await supabaseAdmin.rpc(
             "try_consume_free_generation",
             { p_user_id: user.id }
           );
@@ -331,7 +349,7 @@ export async function POST(request: Request) {
         // Usage counter: paid/BYOK runs counted here; free runs counted up-front.
         // Admin (owner) runs are unlimited and not counted.
         if (!freeQuota && !admin) {
-          await supabase.rpc("increment_generations_used", { p_user_id: user.id });
+          await supabaseAdmin.rpc("increment_generations_used", { p_user_id: user.id });
         }
 
         send({ type: "done", generationId, urls: imageUrls, prompts, byok, driveUrl: driveFolderUrl, cost });

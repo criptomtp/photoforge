@@ -94,7 +94,7 @@ export async function POST(request: Request) {
         p_description: "Перегенерація 1 фото",
         p_generation_id: generationId,
       });
-    } catch { /* best effort — image already delivered */ }
+    } catch (e) { console.error("Regen charge failed (image delivered free):", e); }
   }
 
   return NextResponse.json({ url });

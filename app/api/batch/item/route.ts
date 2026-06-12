@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   generatePrompts, generateImage, imageInstructionsFor, generateListing,
   type GeminiImagePart, type ProductInfo,
@@ -10,9 +11,8 @@ import {
 import { resolveAngles, qualityTier, refundForRun } from "@/lib/angles";
 import { category } from "@/lib/categories";
 import { getAccessToken, createDriveFolder, uploadFileToDrive } from "@/lib/google-drive";
+import { fetchImageAsPart } from "@/lib/safe-image-fetch"; // shared SSRF-guarded fetch
 import { NextResponse } from "next/server";
-import dns from "node:dns/promises";
-import net from "node:net";
 
 export const maxDuration = 60; // Vercel Hobby hard cap — don't pretend it's 300
 
@@ -24,57 +24,6 @@ interface BatchItemBody {
   mode?: "images" | "descriptions" | "both";
   drive?: boolean;        // also upload generated images to the user's Google Drive
   driveParentId?: string; // parent Drive folder to nest the product folder under
-}
-
-// ── SSRF defence: resolve DNS + reject private/internal targets, follow
-// redirects MANUALLY re-checking each hop (mitigates DNS-rebinding & 302→metadata).
-function isPrivateIp(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const p = ip.split(".").map(Number);
-    if (p[0] === 0 || p[0] === 10 || p[0] === 127) return true;
-    if (p[0] === 192 && p[1] === 168) return true;
-    if (p[0] === 169 && p[1] === 254) return true;
-    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
-    return false;
-  }
-  const v = ip.toLowerCase();
-  if (v === "::1" || v === "::" || v.startsWith("fc") || v.startsWith("fd") || v.startsWith("fe80")) return true;
-  const m = v.match(/::ffff:(\d+\.\d+\.\d+\.\d+)/);
-  if (m) return isPrivateIp(m[1]);
-  return false;
-}
-async function hostResolvesPublic(host: string): Promise<boolean> {
-  try {
-    const addrs = await dns.lookup(host, { all: true });
-    return addrs.length > 0 && addrs.every((a) => !isPrivateIp(a.address));
-  } catch { return false; }
-}
-async function safeFetch(url: string, depth = 0): Promise<Response | null> {
-  if (depth > 3) return null;
-  let u: URL;
-  try { u = new URL(url); } catch { return null; }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  if (!(await hostResolvesPublic(u.hostname))) return null;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 9000);
-  try {
-    const res = await fetch(url, { redirect: "manual", signal: ctrl.signal });
-    clearTimeout(t);
-    if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get("location");
-      if (!loc) return null;
-      return safeFetch(new URL(loc, url).toString(), depth + 1);
-    }
-    return res;
-  } catch { clearTimeout(t); return null; }
-}
-async function fetchImageAsPart(url: string): Promise<GeminiImagePart | null> {
-  const res = await safeFetch(url);
-  if (!res || !res.ok) return null;
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length === 0 || buf.length > 12_000_000) return null;
-  const ct = res.headers.get("content-type") ?? "";
-  return { inline_data: { mime_type: ct.startsWith("image/") ? ct : "image/jpeg", data: buf.toString("base64") } };
 }
 
 const clientMsg = (e: unknown) => {
@@ -158,11 +107,15 @@ export async function POST(request: Request) {
   const season = body.season ?? "";
   const bg = season ? "lifestyle" : "catalog";
 
+  // Reconcile metadata (params stays NULL → the worker queue never claims this
+  // synchronous row; the reaper refunds it if the request is killed mid-run).
+  const billingKind = !metered ? "none" : (freeQuota ? "free" : "metered");
   const { data: gen, error: dbErr } = await supabase.from("generations")
     .insert({
       user_id: user.id, brand: body.brand ?? "", product_type: productType, season,
       gender: body.gender ?? "", category: cat.id, status: "processing",
       batch_id: body.batchId ?? null, sku: body.sku ?? null,
+      billing_kind: billingKind, refund_unit: TOKEN_COSTS.image_gen * tier.tokenMultiplier, images_target: N,
     }).select().single();
   if (dbErr || !gen) return NextResponse.json({ sku: body.sku, error: "DB error" }, { status: 500 });
   const generationId: string = gen.id;
@@ -174,7 +127,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ sku: body.sku, error: "Недостатньо токенів" }, { status: 402 });
     }
   } else if (freeQuota) {
-    const { data: consumed } = await supabase.rpc("try_consume_free_generation", { p_user_id: user.id });
+    const { data: consumed } = await supabaseAdmin.rpc("try_consume_free_generation", { p_user_id: user.id });
     if (consumed !== true) {
       await supabase.from("generations").update({ status: "error", error_message: "free_quota_exhausted" }).eq("id", generationId);
       return NextResponse.json({ sku: body.sku, error: "Вичерпано безкоштовний ліміт" }, { status: 402 });
@@ -247,7 +200,7 @@ export async function POST(request: Request) {
     if (refund > 0) await refundTokens(user.id, generationId, refund, `Batch: повернення за ${N - done} невдалих`).catch(() => {});
   }
   if (freeQuota && done === 0) await restoreFreeGeneration(user.id);
-  if (!freeQuota && !admin && done > 0) await supabase.rpc("increment_generations_used", { p_user_id: user.id });
+  if (!freeQuota && !admin && done > 0) await supabaseAdmin.rpc("increment_generations_used", { p_user_id: user.id });
 
   await supabase.from("generations").update({
     status: done > 0 ? "done" : "error",

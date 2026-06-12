@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { resolveApiKey, reserveTokens } from "@/lib/tokens";
-import { resolveAngles, qualityTier } from "@/lib/angles";
+import { resolveAngles, qualityTier, TOKEN_COSTS } from "@/lib/angles";
 import { category } from "@/lib/categories";
 import { kickWorker } from "@/lib/factory";
 import { NextResponse } from "next/server";
@@ -44,6 +44,12 @@ export async function POST(
   const tier = qualityTier(p.quality);
   try {
     const { admin, byok, freeQuota } = await resolveApiKey(user.id, user.email);
+    // Refresh the reconcile metadata to what we're ACTUALLY doing now (the kind
+    // stored at enqueue could be stale if the user's quota/balance changed).
+    const billingKind = (admin || byok) ? "none" : (freeQuota ? "free" : "metered");
+    await supabaseAdmin.from("generations")
+      .update({ billing_kind: billingKind, refund_unit: TOKEN_COSTS.image_gen * tier.tokenMultiplier, images_target: N })
+      .eq("id", g.id);
     if (!admin && !byok && !freeQuota) {
       try { await reserveTokens(user.id, g.id, N, tier.tokenMultiplier); }
       catch (e) {
@@ -51,7 +57,7 @@ export async function POST(
         return NextResponse.json({ error: (e as Error).message }, { status: 402 });
       }
     } else if (freeQuota) {
-      const { data: ok } = await supabase.rpc("try_consume_free_generation", { p_user_id: user.id });
+      const { data: ok } = await supabaseAdmin.rpc("try_consume_free_generation", { p_user_id: user.id });
       if (ok !== true) {
         await supabaseAdmin.from("generations").update({ status: "draft" }).eq("id", g.id);
         return NextResponse.json({ error: "free_quota_exhausted" }, { status: 402 });

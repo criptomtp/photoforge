@@ -104,7 +104,7 @@ export async function POST(request: Request) {
       const { admin, byok, freeQuota } = await resolveApiKey(user.id, user.email);
       if (!admin && !byok && !freeQuota) {
         const t = qualityTier(p.quality);
-        await chargeTokens(user.id, TOKEN_COSTS.image_gen * t.tokenMultiplier, "generation", "Перегенерація (черга)").catch(() => {});
+        await chargeTokens(user.id, TOKEN_COSTS.image_gen * t.tokenMultiplier, "generation", "Перегенерація (черга)").catch((e) => console.error("QA persistent-regen charge failed (free image):", e));
       }
     } catch { /* proceed — admin/owner path */ }
     await supabaseAdmin.from("generations")
