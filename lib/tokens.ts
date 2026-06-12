@@ -37,7 +37,14 @@ export async function resolveApiKey(userId: string, email?: string): Promise<{
     .eq("id", userId)
     .single();
 
-  if (profile?.gemini_api_key) {
+  // FORCE_VERTEX=1 makes the platform IGNORE any saved BYOK key and route ALL
+  // generation through the Vertex service account. This is a HARD safety guard
+  // against real card charges: Vertex usage (aiplatform.googleapis.com) is covered
+  // by the $300 trial credit, but a BYOK AI Studio key (generativelanguage.…) is
+  // NOT — it bills the card directly even during the trial. Enable this flag while
+  // burning trial credit so no AI Studio call (and no card charge) can ever happen.
+  const forceVertex = process.env.FORCE_VERTEX === "1";
+  if (!forceVertex && profile?.gemini_api_key) {
     const { decrypt } = await import("./crypto");
     return { apiKey: decrypt(profile.gemini_api_key), byok: true, freeQuota: false, admin: false };
   }

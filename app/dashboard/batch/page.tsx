@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CATEGORY_LIST, category, classifyCategory, type CategoryId } from "@/lib/categories";
@@ -57,6 +57,17 @@ const mapSeason = (v?: string) => {
   return "any";
 };
 const cell = (r: Row, key?: string) => (key && r[key] != null ? String(r[key]).trim() : "");
+
+// Normalize an article code for matching across uploads. Excel/xlsx often reads a
+// numeric code differently between files ("00123" → 123, "123" → "123.0"), so an
+// exact string match misses already-generated articles. We trim, lowercase, drop
+// the trailing ".0" float artifact, and strip leading zeros ONLY on purely-numeric
+// codes (alphanumeric codes like "A012" keep theirs, so distinct SKUs never merge).
+const normSku = (s: string) => {
+  let x = (s ?? "").trim().toLowerCase().replace(/\s+/g, "").replace(/\.0+$/, "");
+  if (/^\d+$/.test(x)) x = x.replace(/^0+/, "") || "0";
+  return x;
+};
 
 export default function BatchPage() {
   const router = useRouter();
@@ -123,6 +134,17 @@ export default function BatchPage() {
   // remember the uploaded sheet across reloads.
   type SkuStat = { status: string; done: number; total: number; approved: boolean; batchId: string | null; at: string };
   const [skuStatus, setSkuStatus] = useState<Record<string, SkuStat>>({});
+  // Normalized index so a formatting difference in the article code (leading zeros,
+  // ".0", case) doesn't hide an already-generated SKU.
+  const statByNorm = useMemo(() => {
+    const m: Record<string, SkuStat> = {};
+    for (const [k, v] of Object.entries(skuStatus)) m[normSku(k)] = v;
+    return m;
+  }, [skuStatus]);
+  const skuStat = useCallback(
+    (sku: string): SkuStat | undefined => skuStatus[sku] ?? statByNorm[normSku(sku)],
+    [skuStatus, statByNorm]
+  );
   const [hideDone, setHideDone] = useState(false);
   const [page, setPage] = useState(0);
   const [perPage, setPerPage] = useState(50);
@@ -252,7 +274,7 @@ export default function BatchPage() {
     .filter(({ r }) => cols.photos.some((p) => cell(r, p)) && (cell(r, cols.product) || mode === "descriptions"));
 
   // A SKU is "done" if its latest generation was approved or finished.
-  const isDoneSku = (sku: string) => { const s = skuStatus[sku]; return !!s && (s.approved || s.status === "done"); };
+  const isDoneSku = (sku: string) => { const s = skuStat(sku); return !!s && (s.approved || s.status === "done"); };
   const doneCount = validRows.filter(({ r, i }) => isDoneSku(skuOf(r, i))).length;
   // Rows shown in the table (optionally hiding already-done ones).
   const displayRows = hideDone ? validRows.filter(({ r, i }) => !isDoneSku(skuOf(r, i))) : validRows;
@@ -415,7 +437,7 @@ export default function BatchPage() {
 
   // Server-side status for a SKU from past runs (shown when there's no live result).
   function serverBadge(sku: string) {
-    const s = skuStatus[sku];
+    const s = skuStat(sku);
     if (!s) return <span className="text-[#6B6560]">⬜ нове</span>;
     if (s.approved) return <span className="text-green-400">✅ підтверджено</span>;
     if (s.status === "done")
